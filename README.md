@@ -160,7 +160,7 @@ cp references/tool_repair.py /path/to/hermes/agent/tool_repair.py
 
 Or prompt your agent:
 
-> Install the tool-repair-harness for Hermes by copying `references/tool_repair.py` into the Hermes agent directory and enabling `agent.tool_repair: true` in `~/.hermes/config.yaml`.
+> Clone `https://github.com/bojansandhaus/tool-repair-skill-for-hermes-and-opencode.git`, copy `references/tool_repair.py` into the Hermes agent directory, and enable `agent.tool_repair: true` in `~/.hermes/config.yaml`.
 
 Enable in `~/.hermes/config.yaml`:
 
@@ -179,7 +179,7 @@ cp -r adapters/opencode/* ~/.config/opencode/plugins/
 
 Or prompt your agent:
 
-> Install the tool-repair-harness for OpenCode by copying the TypeScript plugin from `adapters/opencode/` to `~/.config/opencode/plugins/`.
+> Clone `https://github.com/bojansandhaus/tool-repair-skill-for-hermes-and-opencode.git` and copy the TypeScript plugin from `adapters/opencode/` to `~/.config/opencode/plugins/`.
 
 ### Claude Code
 
@@ -192,7 +192,7 @@ chmod +x .claude/hooks/*.sh
 
 Or prompt your agent:
 
-> Install the tool-repair-harness for Claude Code by copying the hook scripts from `adapters/claude-code/` to `.claude/hooks/`, making them executable, and adding the `pre_tool_use` and `post_tool_use` hook entries to `claude.json`.
+> Clone `https://github.com/bojansandhaus/tool-repair-skill-for-hermes-and-opencode.git`, copy the hook scripts from `adapters/claude-code/` to `.claude/hooks/`, make them executable, and add the `pre_tool_use` and `post_tool_use` hook entries to `claude.json`.
 
 ```json
 {
