@@ -173,14 +173,6 @@ Copy the TypeScript adapter into your OpenCode plugins directory:
 cp -r adapters/opencode/* ~/.config/opencode/plugins/
 ```
 
-Or install the npm package (once published):
-
-```json
-{
-  "plugin": ["tool-repair-harness-opencode"]
-}
-```
-
 ### Claude Code
 
 Copy the hook scripts and configure in `claude.json`:
