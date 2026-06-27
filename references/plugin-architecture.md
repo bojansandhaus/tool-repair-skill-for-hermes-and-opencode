@@ -1,4 +1,4 @@
-# hermes-tool-repair Plugin Architecture (Draft Proposal)
+# Hermes Tool Repair Plugin Architecture (Draft Proposal)
 
 ## What It Is
 
@@ -25,7 +25,7 @@ The plugin registers a `post_tool_call` or `transform_llm_output` hook, or a cus
 
 In `plugin.yaml`:
 ```yaml
-name: hermes-tool-repair
+name: tool-repair-skill-for-hermes-and-opencode
 version: 1.0.0
 description: Deterministic tool call repair harness
 provides_hooks:

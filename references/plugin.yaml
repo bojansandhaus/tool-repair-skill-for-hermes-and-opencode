@@ -1,4 +1,4 @@
-name: hermes-tool-repair
+name: tool-repair-skill-for-hermes-and-opencode
 version: 1.0.0
 description: "Deterministic tool call repair — catches the four common JSON mistakes open models make and fixes them before dispatch, with repair notes so the model self-corrects."
 author: Hermione

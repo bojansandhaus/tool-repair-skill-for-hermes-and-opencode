@@ -1,4 +1,4 @@
-# Tool Repair Harness
+# Tool Repair Skill for Hermes and OpenCode
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 ![Python 3.10+](https://img.shields.io/badge/Python-3.10%2B-blue)
@@ -207,8 +207,8 @@ chmod +x .claude/hooks/*.sh
 ### Clone the repo
 
 ```bash
-git clone https://github.com/bojansandhaus/hermes-tool-repair-skill.git
-cd hermes-tool-repair-skill
+git clone https://github.com/bojansandhaus/tool-repair-skill-for-hermes-and-opencode.git
+cd tool-repair-skill-for-hermes-and-opencode
 ```
 
 ## Usage

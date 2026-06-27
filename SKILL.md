@@ -276,8 +276,8 @@ The `pre_tool_call` hook only supports blocking a tool. It cannot modify argumen
 
 ## Repositories
 
-Source code and README at [github.com/bojansandhaus/hermes-tool-repair-skill](https://github.com/bojansandhaus/hermes-tool-repair-skill) (public) and
-[gitflic.ru/bojansandhaus/hermes-tool-repair-skill](https://gitflic.ru/project/bojansandhaus/hermes-tool-repair-skill) (private mirror).
+Source code and README at [github.com/bojansandhaus/tool-repair-skill-for-hermes-and-opencode](https://github.com/bojansandhaus/tool-repair-skill-for-hermes-and-opencode) (public) and
+[gitflic.ru/bojansandhaus/tool-repair-skill-for-hermes-and-opencode](https://gitflic.ru/project/bojansandhaus/tool-repair-skill-for-hermes-and-opencode) (private mirror).
 Both remotes are kept identical.
 
 ## Pitfalls
