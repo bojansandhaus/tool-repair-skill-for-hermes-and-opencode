@@ -51,28 +51,81 @@ repaired_args, repair_notes = repair_function_args(
 # repair_notes = ["[repair: null values removed for optional fields]"]
 ```
 
-Can be imported and used by any agent framework. Not tied to Hermes.
+Can be imported and used by any agent framework, not just Hermes.
 
 ### Hermes Agent integration (included)
 
-Two small modifications to the Hermes core:
+Two small modifications to the Hermes core.
 
-1. **`agent/agent_runtime_helpers.py`** — `sanitize_tool_call_arguments()` used to only catch unparseable JSON and replace it with `{}`. Now after `json.loads()` succeeds, it runs `repair_function_args()` on the parsed dict. If repairs trigger, it updates the arguments JSON and stores a repair note in a side-channel dict.
+1. **`agent/agent_runtime_helpers.py`**. `sanitize_tool_call_arguments()` used to only catch unparseable JSON and replace it with `{}`. Now after `json.loads()` succeeds, it runs `repair_function_args()` on the parsed dict. If repairs trigger, it updates the arguments JSON and stores a repair note in a side-channel dict.
 
-2. **`agent/tool_dispatch_helpers.py`** — `make_tool_result_message()` checks the side channel for pending repair notes and appends them to the tool result content before it goes back to the model.
+2. **`agent/tool_dispatch_helpers.py`**. `make_tool_result_message()` checks the side channel for pending repair notes and appends them to the tool result content before it goes back to the model.
 
 The model reads the repair note alongside the successful result and self-corrects on the next turn. No more 50-retry loops.
 
 ### Hermes Plugin (draft)
 
-`references/plugin.yaml` plus `plugin-architecture.md` — a blueprint for packaging the repair logic as a proper Hermes plugin with telemetry, dashboard, and config. Needs a `pre_tool_call` hook that supports argument modification (not currently available in Hermes' hook system).
+`references/plugin.yaml` plus `plugin-architecture.md`. A blueprint for packaging the repair logic as a proper Hermes plugin with telemetry, dashboard, and config. Needs a `pre_tool_call` hook that supports argument modification (not currently available in Hermes hook system).
 
 ## Safety Guarantees
 
 - **Valid inputs are never touched.** The first step is always "try the input as-is." Only paths that fail validation get repaired.
 - **Non-JSON tool data is unaffected.** The repair layer only examines tool call arguments (the JSON dict describing what the tool should do), not tool results, binary content, images, or multimodal data.
-- **Schema-aware array repairs.** Array-specific repairs (empty-object-to-array, bare-string-wrap) only fire when the tool's JSON schema confirms the field expects an array type. Without a schema, only safe universal repairs run (null-strip, stringified-array-parse, autolink-unwrap).
+- **Schema-aware array repairs.** Array-specific repairs (empty-object-to-array, bare-string-wrap) only fire when the tool JSON schema confirms the field expects an array type. Without a schema, only safe universal repairs run (null-strip, stringified-array-parse, autolink-unwrap).
 - **Repair notes deduplicate.** If a repair note was already appended on a previous turn, it won't get stacked again.
+
+## Dependencies
+
+The core library (`tool_repair.py`) needs nothing beyond Python standard library. The Hermes integration needs Hermes Agent (any recent version) and is a three-file drop-in:
+- `agent/tool_repair.py` (the repair library)
+- Two lines added to `agent/agent_runtime_helpers.py`
+- Two lines added to `agent/tool_dispatch_helpers.py`
+
+No pip packages, no npm modules, no external services.
+
+## How to Install
+
+### Option 1: Minimal (just the library)
+
+Drop `references/tool_repair.py` anywhere in your Python path:
+
+```bash
+cp references/tool_repair.py /your/project/tool_repair.py
+```
+
+Then import and use it directly:
+
+```python
+from tool_repair import repair_function_args
+fixed, notes = repair_function_args("my_tool", {"some_field": None})
+```
+
+### Option 2: Hermes Agent integration
+
+Copy the files and apply the two small patches described above:
+
+```bash
+# 1. Copy the library into Hermes agent directory
+cp references/tool_repair.py /path/to/hermes/agent/tool_repair.py
+
+# 2. The patches are in README.md or apply via the included scripts
+```
+
+The integration automatically catches bad tool calls from any model. Enable or disable in your Hermes config:
+
+```yaml
+# ~/.hermes/config.yaml
+agent:
+  tool_repair: true  # default: true
+```
+
+### Option 3: Clone the repo
+
+```bash
+git clone https://github.com/bojansandhaus/hermes-tool-repair-skill.git
+cd hermes-tool-repair-skill
+cp references/tool_repair.py /wherever/you/need/it/
+```
 
 ## Usage
 
@@ -94,13 +147,7 @@ def dispatch_tool(name, args_json):
 
 ### In Hermes Agent
 
-Already wired in. No additional setup needed. The integration lives in `sanitize_tool_call_arguments` and `make_tool_result_message`. Flip the switch in config:
-
-```yaml
-# ~/.hermes/config.yaml
-agent:
-  tool_repair: true  # default: true
-```
+Already wired in. No additional setup needed. The integration lives in `sanitize_tool_call_arguments` and `make_tool_result_message`.
 
 ## Roadmap
 
@@ -113,4 +160,4 @@ agent:
 
 ## License
 
-MIT. Free to use, modify, and distribute. This is a direct implementation of patterns discovered by the CommandCode team. All credit for the original insight goes to them.
+MIT. Free to use, modify, and distribute. This is a direct implementation of patterns discovered by the CommandCode team. Credit for the original insight goes to them.
