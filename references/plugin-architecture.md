@@ -162,9 +162,9 @@ for key, count in counts.most_common():
 ```yaml
 plugins:
   enabled:
-    - hermes-tool-repair
+    - tool-repair-skill-for-hermes-and-opencode
   entries:
-    hermes-tool-repair:
+    tool-repair-skill-for-hermes-and-opencode:
       enabled: true
       log_repairs: true
       log_path: ~/.hermes/data/tool-repair-telemetry.jsonl
