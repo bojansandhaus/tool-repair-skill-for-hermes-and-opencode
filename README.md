@@ -1,6 +1,6 @@
 # Hermes Tool Repair Skill
 
-Deterministic tool call repair for LLM agents. Catches the four common JSON formatting mistakes open models make and fixes them before they reach the tool executor, with repair notes that teach the model to self-correct.
+A **harness-level** fix for LLM tool calling. Catches the four common JSON formatting mistakes open models make and fixes them deterministically before the tool executor ever sees them. The model benefits from repair notes in the tool result, but the actual repair happens in the harness layer. No model changes needed.
 
 Based on the approach that made DeepSeek V4 Pro outperform Opus 4.7 on tool calling (see [CommandCode's post](https://x.com/CommandCodeAI/status/1927626163496718571) and [YouTube deep dive](https://www.youtube.com/watch?v=f61DCDwvFis)).
 
@@ -9,6 +9,12 @@ Based on the approach that made DeepSeek V4 Pro outperform Opus 4.7 on tool call
 Open models (DeepSeek, GLM, Qwen, Kimi) make the same tiny JSON mistakes in tool calls over and over. Each mistake triggers a validation error. The model retries with the same bad format. The session degrades through 50+ wasted retry cycles. The model never learns because the error messages are opaque.
 
 These mistakes are not random. They are a small finite set of four patterns caused by the model's training distribution leaking through the tool boundary.
+
+### Harness vs Model
+
+Most people frame this as a model problem: "DeepSeek is bad at tool calling, wait for the next version." That is wrong. It is a **harness** problem. The harness sits between the model and the tool executor. It decides what to do with the model's output — reject it and waste tokens retrying, or fix it silently and move on. A harness that repairs deterministically turns a "bad at tool calling" model into a functional one in 200 lines of code.
+
+The model did not change. The harness got more forgiving in exactly the places it needed to be.
 
 ## The Four Patterns This Fixes
 
@@ -23,13 +29,23 @@ These mistakes are not random. They are a small finite set of four patterns caus
 ## How It Works
 
 ```
-model tool_calls → JSON parse → validate → [pass] dispatch
-                                           [fail] walk validator issue list
-                                                 → apply repairs at flagged paths
-                                                 → re-validate
-                                                 → [pass] execute tool + append repair note
-                                                 → [fail] return readable error
+                  ┌─ HARNESS ─────────────────────────────┐
+model output ──→  │  JSON parse → validate → [pass] dispatch │
+                  │                        [fail] walk      │
+                  │                              ↓          │
+                  │                        apply repairs     │
+                  │                              ↓          │
+                  │                        re-validate      │
+                  │                              ↓          │
+                  │                   [pass] execute tool   │
+                  │                   [fail] return error    │
+                  └──────────────────────────────────────────┘
+                              │
+                              ↓
+                  tool result + repair note → back to model
 ```
+
+Everything in the box is the harness. The model only provides the raw JSON and receives the result. All repair logic, validation, and correction notes are handled at the harness layer.
 
 **Key design rule:** Valid inputs are never touched. The repair layer parses the input as-is first. If it passes the schema, it ships. Repairs only fire at paths the validator actually flagged. This prevents silent corruption of legitimate data (e.g., writeFile content that happens to be JSON-shaped).
 
@@ -55,13 +71,13 @@ Can be imported and used by any agent framework, not just Hermes.
 
 ### Hermes Agent integration (included)
 
-Two small modifications to the Hermes core.
+Two small modifications to the Hermes harness core. Both operate at the harness layer, between the model's output and the tool executor:
 
-1. **`agent/agent_runtime_helpers.py`**. `sanitize_tool_call_arguments()` used to only catch unparseable JSON and replace it with `{}`. Now after `json.loads()` succeeds, it runs `repair_function_args()` on the parsed dict. If repairs trigger, it updates the arguments JSON and stores a repair note in a side-channel dict.
+1. **`agent/agent_runtime_helpers.py`**. `sanitize_tool_call_arguments()` is a harness function that walks tool calls before dispatch. It used to only catch unparseable JSON and replace it with `{}`. Now after `json.loads()` succeeds, it runs `repair_function_args()` on the parsed dict. If repairs trigger, it updates the arguments JSON and stores a repair note in the harness side-channel.
 
-2. **`agent/tool_dispatch_helpers.py`**. `make_tool_result_message()` checks the side channel for pending repair notes and appends them to the tool result content before it goes back to the model.
+2. **`agent/tool_dispatch_helpers.py`**. `make_tool_result_message()` is a harness function that builds the tool result before it goes back to the model. It checks the harness side-channel for pending repair notes and appends them to the result content.
 
-The model reads the repair note alongside the successful result and self-corrects on the next turn. No more 50-retry loops.
+The model reads the repair note alongside the successful result and adapts on the next turn. The harness did the fixing. The model just benefits from seeing what was fixed.
 
 ### Hermes Plugin (draft)
 

@@ -16,12 +16,20 @@ The fix isn't fine-tuning the model. It's making the contract more forgiving in 
 ## Validate-Then-Repair (The Structural Pattern)
 
 ```
-model output → JSON parse → schema validate → [on success] dispatch
-                                              → [on failure] walk validator issue list
-                                                           → apply repairs at flagged paths
-                                                           → re-validate
-                                                           → [success] dispatch + repair note
-                                                           → [failure] return model-readable error
+                  ┌─ HARNESS ─────────────────────────────┐
+model output ──→  │  JSON parse → schema validate → [pass] │
+                  │                        [fail] walk    │
+                  │                              ↓        │
+                  │                        apply repairs   │
+                  │                              ↓        │
+                  │                        re-validate    │
+                  │                              ↓        │
+                  │                   [pass] dispatch      │
+                  │                   [fail] return error  │
+                  └────────────────────────────────────────┘
+                              │
+                              ↓
+                  tool result + repair note → back to model
 ```
 
 **Critical rule:** Parse the input as-is first. If it succeeds, ship it. Valid inputs are never touched. Only spend repair budget at paths the validator actually disagreed at. This prevents silent corruption of valid data (e.g. writeFile content that happens to be JSON-shaped).
