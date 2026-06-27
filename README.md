@@ -1,6 +1,10 @@
 # Hermes Tool Repair Skill
 
-A **harness-level** fix for LLM tool calling. Catches the four common JSON formatting mistakes open models make and fixes them deterministically before the tool executor ever sees them. The model benefits from repair notes in the tool result, but the actual repair happens in the harness layer. No model changes needed.
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+![Python 3.10+](https://img.shields.io/badge/Python-3.10%2B-blue)
+[![GitHub](https://img.shields.io/badge/GitHub-repo-181717?logo=github)](https://github.com/bojansandhaus/hermes-tool-repair-skill)
+
+A **harness-level** fix for LLM tool calling. Catches the common JSON formatting mistakes open models make and fixes them deterministically before the tool executor ever sees them. The model benefits from repair notes in the tool result, but the actual repair happens in the harness layer. No model changes needed.
 
 Based on the approach that made DeepSeek V4 Pro outperform Opus 4.7 on tool calling (see [CommandCode's post](https://x.com/CommandCodeAI/status/1927626163496718571) and [YouTube deep dive](https://www.youtube.com/watch?v=f61DCDwvFis)).
 
@@ -8,11 +12,11 @@ Based on the approach that made DeepSeek V4 Pro outperform Opus 4.7 on tool call
 
 Open models (DeepSeek, GLM, Qwen, Kimi) make the same tiny JSON mistakes in tool calls over and over. Each mistake triggers a validation error. The model retries with the same bad format. The session degrades through 50+ wasted retry cycles. The model never learns because the error messages are opaque.
 
-These mistakes are not random. They are a small finite set of four patterns caused by the model's training distribution leaking through the tool boundary.
+These mistakes are not random. They are a small finite set of patterns caused by the model's training distribution leaking through the tool boundary.
 
 ### Harness vs Model
 
-Most people frame this as a model problem: "DeepSeek is bad at tool calling, wait for the next version." That is wrong. It is a **harness** problem. The harness sits between the model and the tool executor. It decides what to do with the model's output: reject it and waste tokens retrying, or fix it silently and move on. A harness that repairs deterministically turns a "bad at tool calling" model into a functional one in 200 lines of code.
+Most people frame this as a model problem: "DeepSeek is bad at tool calling, wait for the next version." That is wrong. It is a **harness** problem. The harness sits between the model and the tool executor. It decides what to do with the model's output: reject it and waste tokens retrying, or fix it silently and move on. A harness that repairs deterministically turns a bad-at-tool-calling model into a functional one in about 200 lines of code.
 
 The model did not change. The harness got more forgiving in exactly the places it needed to be.
 
@@ -28,26 +32,28 @@ The model did not change. The harness got more forgiving in exactly the places i
 
 ## How It Works
 
-```
-                  ┌─ HARNESS ─────────────────────────────┐
-model output ──→  │  JSON parse → validate → [pass] dispatch │
-                  │                        [fail] walk      │
-                  │                              ↓          │
-                  │                        apply repairs     │
-                  │                              ↓          │
-                  │                        re-validate      │
-                  │                              ↓          │
-                  │                   [pass] execute tool   │
-                  │                   [fail] return error    │
-                  └──────────────────────────────────────────┘
-                              │
-                              ↓
-                  tool result + repair note → back to model
+```mermaid
+flowchart TD
+    subgraph Harness["HARNESS BOUNDARY"]
+        direction TB
+        P["Parse JSON"] --> V{"Schema Valid?"}
+        V -->|"Yes"| D["Execute Tool"]
+        V -->|"No"| W["Walk Issue List by Path"]
+        W --> R["Apply Repairs<br/>in Priority Order"]
+        R --> RV{"Re-validate"}
+        RV -->|"Pass"| D
+        RV -->|"Fail"| E["Return Readable Error<br/>with Guidance"]
+    end
+
+    M["Model Output<br/>(raw tool call JSON)"] --> P
+    D --> N["Tool Result<br/>+ Repair Note"]
+    E --> N
+    N --> B["Back to Model"]
 ```
 
-Everything in the box is the harness. The model only provides the raw JSON and receives the result. All repair logic, validation, and correction notes are handled at the harness layer.
+Everything inside the HARNESS BOUNDARY box is your agent framework. The model provides the raw JSON and receives the result. All repair logic, validation, and correction notes are handled at the harness layer.
 
-**Key design rule:** Valid inputs are never touched. The repair layer parses the input as-is first. If it passes the schema, it ships. Repairs only fire at paths the validator actually flagged. This prevents silent corruption of legitimate data (e.g., writeFile content that happens to be JSON-shaped).
+**Key design rule:** Valid inputs are never touched. The repair layer parses the input as-is first. If it passes the schema, it ships immediately. Repairs only fire at paths the validator actually flagged. This prevents silent corruption of legitimate data (for example, writeFile content that happens to be JSON-shaped).
 
 ## Components
 
@@ -93,6 +99,7 @@ The model reads the repair note alongside the successful result and adapts on th
 ## Dependencies
 
 The core library (`tool_repair.py`) needs nothing beyond Python standard library. The Hermes integration needs Hermes Agent (any recent version) and is a three-file drop-in:
+
 - `agent/tool_repair.py` (the repair library)
 - Two lines added to `agent/agent_runtime_helpers.py`
 - Two lines added to `agent/tool_dispatch_helpers.py`
@@ -124,7 +131,7 @@ Copy the files and apply the two small patches described above:
 # 1. Copy the library into Hermes agent directory
 cp references/tool_repair.py /path/to/hermes/agent/tool_repair.py
 
-# 2. The patches are in README.md or apply via the included scripts
+# 2. The patches are detailed in the Components section above.
 ```
 
 The integration automatically catches bad tool calls from any model. Enable or disable in your Hermes config:
