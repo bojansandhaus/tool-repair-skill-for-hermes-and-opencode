@@ -1,0 +1,26 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: python -m pip install pytest
+      - name: Unit and hook tests
+        run: python -m pytest tests -q
+      - name: Module self-test
+        run: python references/tool_repair.py
+      - name: Shell hook syntax
+        run: bash -n adapters/claude-code/pre_tool_use.sh adapters/claude-code/post_tool_use.sh
+      - name: Byte-compile
+        run: python -m compileall -q references tests

@@ -13,7 +13,7 @@ frameworks:
 |---------|----------|-----------------|
 | **Hermes** (built-in) | Python | Mutate args pre-dispatch + repair notes via side-channel |
 | **OpenCode** (plugin) | TypeScript | `tool.execute.before` hook, mutates args directly |
-| **Claude Code** (hooks) | Bash + jq | `PreToolUse` block + `PostToolUse` telemetry (limited, no arg mutation) |
+| **Claude Code** (hooks) | Bash + jq | `PreToolUse` block so the model retries, `PostToolUse` telemetry. **Cannot mutate arguments**: PreToolUse can only allow or block, so this adapter corrects by feedback, not in place. |
 
 Based on the approach that made DeepSeek V4 Pro outperform Opus 4.7 on tool
 calling (see [CommandCode's post](https://x.com/CommandCodeAI/status/1927626163496718571)
@@ -31,7 +31,7 @@ Most people frame this as a model problem: "DeepSeek is bad at tool calling, wai
 
 The model did not change. The harness got more forgiving in exactly the places it needed to be.
 
-## The Four Patterns This Fixes
+## The Repair Rules This Applies
 
 | Pattern | What the model sends | What it should be |
 |---------|---------------------|-------------------|
@@ -65,7 +65,7 @@ flowchart TD
 
 Everything inside the HARNESS BOUNDARY box is your agent framework. The model provides the raw JSON and receives the result. All repair logic, validation, and correction notes are handled at the harness layer.
 
-**Key design rule:** Valid inputs are never touched. The repair layer parses the input as-is first. If it passes the schema, it ships immediately. Repairs only fire at paths the validator actually flagged. This prevents silent corruption of legitimate data (for example, writeFile content that happens to be JSON-shaped).
+**Key design rule:** a repair only fires when it is unambiguously the right thing, so legitimate data survives. The rules that could touch arbitrary content are narrow on purpose. A string is only parsed as an array when it parses as one; an auto-link is only unwrapped when the link text equals the URL's own path component; an array-shaped repair only fires when the schema says the field is an array; a null is only dropped when the schema neither requires the field nor admits null for it. So `writeFile` content that happens to be JSON-shaped, a real `[click](https://example.com)` link, and bracketed prose like `[1, 2] and [3, 4]` all pass through untouched, and the test suite asserts each of those cases.
 
 ## Components
 
@@ -97,9 +97,9 @@ Two small modifications to the Hermes harness core. Both operate at the harness 
 
 The model reads the repair note alongside the successful result and adapts on the next turn. The harness did the fixing. The model just benefits from seeing what was fixed.
 
-### Hermes Plugin (draft)
+### Hermes plugin manifest
 
-`references/plugin.yaml` plus `plugin-architecture.md`. A blueprint for packaging the repair logic as a proper Hermes plugin with telemetry, dashboard, and config. Needs a `pre_tool_call` hook that supports argument modification (not currently available in Hermes hook system).
+`references/plugin.yaml` declares the hook surface (`transform_llm_output`) and `plugin-architecture.md` sketches the wiring. **This is not wired into Hermes yet.** Repairing an argument before dispatch needs a `pre_tool_call` hook that can modify arguments, which the Hermes hook system does not currently offer. Until it does, use the two-call integration above: `repair_function_args` in `sanitize_tool_call_arguments`, and `deduplicate_repair_notes` in the tool-result builder.
 
 ## Adapted For Other Frameworks
 
@@ -121,7 +121,7 @@ See each adapter's README for setup instructions.
 
 ## Safety Guarantees
 
-- **Valid inputs are never touched.** The first step is always "try the input as-is." Only paths that fail validation get repaired.
+- **String-valued content is not at risk.** The stringified-array rule only fires on a string that parses as a JSON array, and the auto-link rule only fires when the link text equals the URL's own path component. Prose like `[1, 2] and [3, 4]` and a real link like `[click](https://example.com)` pass through untouched, which the test suite asserts.
 - **Non-JSON tool data is unaffected.** The repair layer only examines tool call arguments (the JSON dict describing what the tool should do), not tool results, binary content, images, or multimodal data.
 - **Schema-aware array repairs.** Array-specific repairs (empty-object-to-array, bare-string-wrap) only fire when the tool JSON schema confirms the field expects an array type. Without a schema, only safe universal repairs run (null-strip, stringified-array-parse, autolink-unwrap).
 - **Repair notes deduplicate.** If a repair note was already appended on a previous turn, it won't get stacked again.
@@ -241,12 +241,12 @@ Already wired in. No additional setup needed. The integration lives in `sanitize
 
 ## Roadmap
 
-- [x] Core repair library (5 pattern fixes)
+- [x] Core repair library (5 repair rules)
 - [x] Hermes integration (sanitize + tool result pipeline)
 - [x] Repair note side channel (model self-correction)
 - [x] OpenCode adapter (TypeScript plugin)
 - [x] Claude Code adapter (bash + jq hooks)
-- [ ] Schema-aware repairs (type inference from JSON schema)
+- [x] Schema-aware repairs (array fields, and required/nullable null safety)
 - [ ] Per-model repair telemetry (dashboard tab)
 - [ ] Model-specific repair profiles (DeepSeek, GLM, Kimi quirks)
 
