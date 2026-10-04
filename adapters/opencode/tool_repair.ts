@@ -32,7 +32,11 @@ export function repairFunctionArgs(
   const notes: string[] = [];
 
   // Order matters: json-array-parse BEFORE bare-string-wrap
-  applyNullOmit(functionArgs, notes);
+  //
+  // Null-omit is schema-aware too: a null on a required or explicitly nullable
+  // field is a real value, not a stand-in for an omitted optional, so deleting
+  // it would silently change the call. See applyNullOmit.
+  applyNullOmit(functionArgs, notes, toolSchema);
   applyJsonArrayParse(functionArgs, notes);
   applyMarkdownAutolinkUnwrap(functionArgs, notes);
 
@@ -51,10 +55,12 @@ export function repairFunctionArgs(
 function applyNullOmit(
   args: Record<string, unknown>,
   notes: string[],
+  schema?: Record<string, unknown> | null,
 ): void {
+  const { required, nullable } = schemaNullability(schema);
   const nullKeys: string[] = [];
   for (const [key, value] of Object.entries(args)) {
-    if (value === null) {
+    if (value === null && !required.has(key) && !nullable.has(key)) {
       nullKeys.push(key);
     }
   }
@@ -156,6 +162,54 @@ function applyBareStringWrap(
       notes.push(`bare strings wrapped as single-element arrays: ${key}`);
     }
   }
+}
+
+// ---------------------------------------------------------------------------
+// Helper: which fields may NOT have a null deleted
+// ---------------------------------------------------------------------------
+interface Nullability {
+  required: Set<string>;
+  nullable: Set<string>;
+}
+
+/**
+ * Returns the required and explicitly-nullable field names of a tool schema.
+ *
+ * With no schema every field counts as optional, which preserves the original
+ * two-argument behaviour of deleting every null.
+ */
+function schemaNullability(
+  schema?: Record<string, unknown> | null,
+): Nullability {
+  const required = new Set<string>();
+  const nullable = new Set<string>();
+  if (!schema) return { required, nullable };
+
+  const declared = (schema as any).required;
+  if (Array.isArray(declared)) {
+    for (const name of declared) required.add(String(name));
+  }
+
+  const properties = (schema as any).properties;
+  if (properties) {
+    for (const [key, prop] of Object.entries(properties as Record<string, any>)) {
+      const fieldType = prop?.type;
+      if (fieldType === "null") {
+        nullable.add(key);
+      } else if (Array.isArray(fieldType) && fieldType.includes("null")) {
+        nullable.add(key);
+      }
+      for (const polyKey of ["anyOf", "oneOf"] as const) {
+        const variants = prop?.[polyKey];
+        if (Array.isArray(variants)) {
+          for (const variant of variants) {
+            if (variant?.type === "null") nullable.add(key);
+          }
+        }
+      }
+    }
+  }
+  return { required, nullable };
 }
 
 // ---------------------------------------------------------------------------

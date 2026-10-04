@@ -51,7 +51,9 @@ Across DeepSeek-Flash, DeepSeek V4 Pro, GLM, Qwen: the same four mistakes repeat
 
 Symptom: The model sends `{"command": "ls", "timeout": null}` where timeout is optional. The schema rejects because it expects either a number or undefined, not null.
 
-Fix: Walk the parsed JSON. For any field whose value is `null`, delete the key entirely (omit it). A field that isn't present satisfies any optional schema. This works because the model's intent is clear: it wanted to leave it unset, but its training distribution leaked `null` instead of omission.
+Fix: Walk the parsed JSON. For any field whose value is `null` **and which the schema does not require and does not admit null for**, delete the key entirely (omit it). A field that isn't present satisfies any optional schema. This works because the model's intent is clear: it wanted to leave it unset, but its training distribution leaked `null` instead of omission.
+
+**Boundary (fixed in v1.0.1).** A null on a field listed in the schema's `required` array, or on a field whose type union contains `"null"`, is a real value and not a stand-in for an omitted optional. Deleting it there turns a rejected call into a differently invalid one and hides the error. Leave those alone so the validator reports them. With no schema available every field counts as optional, which is the older, more permissive behaviour.
 
 ### 2. Json-Array-Parse: `"[\"a\",\"b\"]"` as a string
 

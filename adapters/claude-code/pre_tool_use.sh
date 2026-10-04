@@ -29,8 +29,8 @@ set -euo pipefail
 INPUT=$(cat)
 
 # Extract tool name and arguments
-TOOL_NAME=$(echo "$INPUT" | jq -r '.tool // empty')
-ARGS_JSON=$(echo "$INPUT" | jq -c '.input // {}')
+TOOL_NAME=$(printf '%s' "$INPUT" | jq -r '.tool // empty')
+ARGS_JSON=$(printf '%s' "$INPUT" | jq -c '.input // {}')
 
 # If no tool name or empty args, let it through
 if [ -z "$TOOL_NAME" ] || [ "$ARGS_JSON" = "null" ]; then
@@ -42,9 +42,11 @@ fi
 ISSUES=""
 
 # Pattern 1: null values for optional fields
-NULL_FIELDS=$(echo "$ARGS_JSON" | jq -r '
-  [paths(scalars) as $p
-  | select(getpath($p) == null)
+# NOTE: this must be `paths(. == null)`, not `paths(scalars) as $p | select(getpath($p) == null)`.
+# paths(scalars) does not emit a path for a null value, so the select could never
+# fire and this hook silently approved every call it was installed to catch.
+NULL_FIELDS=$(printf '%s' "$ARGS_JSON" | jq -r '
+  [paths(. == null) as $p
   | ($p | join("."))]
   | join(", ")
 ')
@@ -53,8 +55,8 @@ if [ -n "$NULL_FIELDS" ]; then
 fi
 
 # Pattern 2: stringified JSON arrays
-STRINGIFIED=$(echo "$ARGS_JSON" | jq -r '
-  [paths(scalars) as $p
+STRINGIFIED=$(printf '%s' "$ARGS_JSON" | jq -r '
+  [paths(type == "string") as $p
   | select((getpath($p) | type) == "string")
   | select(getpath($p) | test("^\\s*\\["))
   | ($p | join("."))]
@@ -65,8 +67,8 @@ if [ -n "$STRINGIFIED" ]; then
 fi
 
 # Pattern 5: markdown auto-links in string values
-AUTOLINKS=$(echo "$ARGS_JSON" | jq -r '
-  [paths(scalars) as $p
+AUTOLINKS=$(printf '%s' "$ARGS_JSON" | jq -r '
+  [paths(type == "string") as $p
   | select((getpath($p) | type) == "string")
   | select(getpath($p) | test("\\[[^]]+\\]\\(https?://"))
   | ($p | join("."))]
@@ -77,9 +79,11 @@ if [ -n "$AUTOLINKS" ]; then
 fi
 
 if [ -n "$ISSUES" ]; then
+  # Build the response with jq, not string interpolation: a field name or path
+  # containing a quote or backslash would otherwise produce malformed JSON.
   MESSAGE="[tool-repair] Detected likely tool call issue in $TOOL_NAME:$ISSUES. Fix the format and retry. Send proper types — null should be omitted, arrays should be real arrays, not strings."
 
-  echo "{\"decision\": \"block\", \"message\": \"$MESSAGE\"}"
+  jq -nc --arg m "$MESSAGE" '{"decision": "block", "message": $m}'
   exit 0
 fi
 

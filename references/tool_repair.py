@@ -35,12 +35,18 @@ from typing import Any, Dict, List, Optional, Tuple
 # Repair migrations — ordered, each ~20-50 lines, composable
 # ---------------------------------------------------------------------------
 
-def _strip_null_fields(args: dict) -> Tuple[dict, bool]:
-    """Strip null values for optional fields. Model sends null instead of omitting."""
+def _strip_null_fields(args: dict, tool_schema: Optional[dict] = None) -> Tuple[dict, bool]:
+    """Strip null values for optional fields. Model sends null instead of omitting.
+
+    A null on a field the schema marks required, or on one whose own type union
+    admits null, is NOT repairable by deletion: dropping the key changes the
+    request into a different, invalid one. Those are left in place so the
+    validator reports them instead of this function silently mutating the call.
+    """
+    required, nullable = _null_is_removable(tool_schema)
     applied = False
-    keys = list(args.keys())
-    for k in keys:
-        if args[k] is None:
+    for k in list(args.keys()):
+        if args[k] is None and k not in required and k not in nullable:
             del args[k]
             applied = True
     return args, applied
@@ -106,6 +112,31 @@ def _unwrap_markdown_autolink(args: dict) -> Tuple[dict, bool]:
 # Schema introspection helpers
 # ---------------------------------------------------------------------------
 
+def _null_is_removable(tool_schema: Optional[dict]) -> Tuple[set, set]:
+    """Return (required_fields, nullable_fields) for a tool's JSON schema.
+
+    A null may only be deleted when the field is neither required nor declared
+    nullable, because deletion is the repair. With no schema every field is
+    treated as optional, which preserves the original single-argument behaviour.
+    """
+    if not tool_schema:
+        return set(), set()
+    properties = tool_schema.get("properties", {}) or {}
+    required = set(tool_schema.get("required", []) or [])
+    nullable: set = set()
+    for name, field_schema in properties.items():
+        field_schema = field_schema or {}
+        field_type = field_schema.get("type")
+        if field_type == "null":
+            nullable.add(name)
+        elif isinstance(field_type, list) and "null" in field_type:
+            nullable.add(name)
+        for poly_key in ("anyOf", "oneOf"):
+            for variant in field_schema.get(poly_key, []) or []:
+                if (variant or {}).get("type") == "null":
+                    nullable.add(name)
+    return required, nullable
+
 def _expected_array_fields(tool_schema: Optional[dict]) -> set:
     """Given a tool's JSON schema, return the set of field names that expect arrays."""
     if not tool_schema:
@@ -151,32 +182,37 @@ def repair_function_args(
     original = dict(function_args)  # shallow copy for comparison
     notes: List[str] = []
 
-    # Migration 0: markdown auto-link unwrap (path fields)
-    args, applied = _unwrap_markdown_autolink(function_args)
-    if applied:
-        notes.append(f"[repair: unwrapped markdown autolinks in file paths]")
+    # Each repair mutates function_args in place and returns whether it fired.
+    # The pipeline is deliberately one-directional: every step sees the output
+    # of the previous one, so ordering constraints are load-bearing.
 
-    # Migration 1: Strip null values for optional fields
-    args, applied = _strip_null_fields(function_args)
+    # Repair 0: markdown auto-link unwrap (path fields)
+    _result, applied = _unwrap_markdown_autolink(function_args)
     if applied:
-        notes.append("[repair: null values removed for optional fields]")
-
-    # Migration 2: Parse stringified JSON arrays (MUST run before bare-string-wrap)
-    args, applied, repaired_keys = _parse_stringified_arrays(function_args)
-    if applied:
-        keys_str = ", ".join(repaired_keys)
-        notes.append(f"[repair: string values parsed as arrays for: {keys_str}]")
+        notes.append("[repair: unwrapped markdown autolinks in file paths]")
 
     # Determine which fields the schema expects as arrays
     array_fields = _expected_array_fields(tool_schema) if tool_schema else set()
 
-    # Migration 3: Empty object -> empty array
-    args, applied = _unwrap_empty_object_arrays(function_args, array_fields)
+    # Repair 1: Strip nulls that stand in for an omitted optional field
+    _result, applied = _strip_null_fields(function_args, tool_schema)
+    if applied:
+        notes.append("[repair: null values removed for optional fields]")
+
+    # Repair 2: Parse stringified JSON arrays (MUST run before bare-string-wrap,
+    # which would otherwise wrap the raw string including its brackets)
+    _result, applied, repaired_keys = _parse_stringified_arrays(function_args)
+    if applied:
+        keys_str = ", ".join(repaired_keys)
+        notes.append(f"[repair: string values parsed as arrays for: {keys_str}]")
+
+    # Repair 3: Empty object -> empty array
+    _result, applied = _unwrap_empty_object_arrays(function_args, array_fields)
     if applied:
         notes.append("[repair: empty objects replaced with empty arrays]")
 
-    # Migration 4: Bare string -> single-element array
-    args, applied = _wrap_bare_string_arrays(function_args, array_fields)
+    # Repair 4: Bare string -> single-element array
+    _result, applied = _wrap_bare_string_arrays(function_args, array_fields)
     if applied:
         notes.append("[repair: bare strings wrapped as single-element arrays]")
 
@@ -195,7 +231,7 @@ def make_repair_note_block(notes: List[str], tool_name: str) -> Optional[str]:
     return f"\n\n[Hermes repaired: {tool_name}]\n{lines}\nNext time use the correct format directly — the schema expects these types."
 
 
-def deduplicate_repair_notes(content: str, new_notes: List[str]) -> str:
+def deduplicate_repair_notes(content: str, new_notes: List[str], tool_name: str = "") -> str:
     """Prevent stacking the same repair notes across turns.
 
     If the tool result already has a repair note for the same issue,
@@ -213,7 +249,7 @@ def deduplicate_repair_notes(content: str, new_notes: List[str]) -> str:
             notes_to_add.append(note)
     if not notes_to_add:
         return content  # all already present — no change
-    block = make_repair_note_block(notes_to_add, "")
+    block = make_repair_note_block(notes_to_add, tool_name)
     return content + (block if block else "")
 
 

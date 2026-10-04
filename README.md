@@ -36,6 +36,7 @@ The model did not change. The harness got more forgiving in exactly the places i
 | Pattern | What the model sends | What it should be |
 |---------|---------------------|-------------------|
 | Null omission | `{"cmd": "ls", "timeout": null}` | `{"cmd": "ls"}` |
+| Null preserved | `{"name": null}` where `name` is `required` | unchanged, so the validator reports it |
 | Stringified array | `{"files": "[\"a\",\"b\"]"}` | `{"files": ["a", "b"]}` |
 | Empty object | `{"files": {}}` | `{"files": []}` |
 | Bare string | `{"files": "main.ts"}` | `{"files": ["main.ts"]}` |
