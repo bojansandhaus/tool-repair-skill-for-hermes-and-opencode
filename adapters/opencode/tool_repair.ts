@@ -108,7 +108,11 @@ function applyMarkdownAutolinkUnwrap(
 ): void {
   // Match patterns like: [filename.md](http://filename.md)
   // Only when link text matches the URL's path component (sans protocol)
-  const autoLinkRe = /\[([^\]]+)\]\(https?:\/\/[^/]+\/\1\)/g;
+  // Matches both the bare-host form and the host+path form. The previous
+  // pattern required a path segment, so it could not match
+  // `[notes.md](http://notes.md)`, which is the example the Python module
+  // documents and asserts in its own self-test.
+  const autoLinkRe = /\[([^\]]+)\]\(https?:\/\/(?:[^/]+\/)?\1\)/g;
 
   for (const [key, value] of Object.entries(args)) {
     if (typeof value === "string") {
@@ -220,13 +224,30 @@ function extractSchemaArrayPaths(
 ): Set<string> {
   const paths = new Set<string>();
 
-  const properties = (schema as any).properties;
-  if (!properties) return paths;
+  const properties = (schema as any)?.properties;
+  if (!properties || typeof properties !== "object") return paths;
 
-  for (const [key, prop] of Object.entries(properties)) {
-    if ((prop as any).type === "array") {
-      paths.add(key);
-    }
+  for (const [key, raw] of Object.entries(properties)) {
+    const prop = (raw ?? {}) as Record<string, unknown>;
+    const isArray =
+      prop.type === "array" ||
+      Array.isArray((prop.type as any) ) && (prop.type as any).includes("array") ||
+      // The Python side walks these unions too. Without this an
+      // `{"anyOf":[{"type":"array"},{"type":"string"}]}` schema silently
+      // stopped the string-to-array repair from firing.
+      ["anyOf", "oneOf"].some((union: string) => {
+        const variants = (prop as Record<string, unknown>)[union];
+        return (
+          Array.isArray(variants) &&
+          variants.some(
+            (variant: unknown) =>
+              typeof variant === "object" &&
+              variant !== null &&
+              (variant as { type?: unknown }).type === "array",
+          )
+        );
+      });
+    if (isArray) paths.add(key);
   }
 
   return paths;

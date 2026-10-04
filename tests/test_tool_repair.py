@@ -9,6 +9,14 @@ Every test here corresponds to a defect that shipped in the original code:
 - the shell hook's jq used paths(scalars), which never emits null paths, so the
   hook approved every call it was installed to catch
 - the hook built its JSON by interpolation, so a quote in a field name broke it
+- the OpenCode adapter read the tool name from output.tool, which does not exist
+  in the published hook types, so toolName was undefined on every call
+- the OpenCode adapter keyed repair notes on input.id, which is not in the
+  published types either, so two concurrent calls to one tool stole each other's
+  notes
+- post_tool_use.sh still used paths(scalars) for its null check. v1.0.1 fixed
+  pre_tool_use.sh and missed this one, so the telemetry it exists to collect
+  reported no null fields, ever
 """
 
 from __future__ import annotations
@@ -30,6 +38,7 @@ from tool_repair import (  # noqa: E402
 )
 
 HOOK = REPO / "adapters" / "claude-code" / "pre_tool_use.sh"
+POST_HOOK = REPO / "adapters" / "claude-code" / "post_tool_use.sh"
 
 
 def repair(args, schema=None):
@@ -90,6 +99,28 @@ def test_no_schema_keeps_original_behaviour():
 # --------------------------------------------------------------------------
 
 ARRAY_SCHEMA = {"properties": {"files": {"type": "array"}}}
+
+
+def test_stringified_array_with_surrounding_whitespace_is_parsed():
+    """Regression: the test was startswith/endswith without stripping, so a
+    trailing space made the whole junk string one array element, which is worse
+    than leaving the call alone. The TypeScript port already trimmed."""
+    for value in ('["a.txt"] ', ' ["a.txt"]', ' ["a.txt"] '):
+        fixed, notes = repair_function_args(
+            "read", {"files": value},
+            {"type": "object", "properties": {"files": {"type": "array"}}},
+        )
+        assert fixed["files"] == ["a.txt"], value
+        assert notes, value
+
+
+def test_a_string_with_brackets_but_no_json_is_not_parsed_as_an_array():
+    """Guards the other direction: trimming must not make the check sloppier."""
+    fixed, notes = repair_function_args(
+        "read", {"files": " [not json] "},
+        {"type": "object", "properties": {"files": {"type": "array"}}},
+    )
+    assert notes, "a non-JSON bracket string should not be reported as repaired"
 
 
 def test_stringified_array_is_parsed():
@@ -199,3 +230,69 @@ def test_hook_output_is_valid_json_for_a_hostile_field_name():
 
 def test_hook_proceeds_without_a_tool_name():
     assert run_hook({"input": {"limit": None}})["decision"] == "proceed"
+
+
+# --------------------------------------------------------------------------
+# post_tool_use.sh: the null check was dead in v1.0.1
+# --------------------------------------------------------------------------
+
+def run_post_hook(payload, tmp_path):
+    proc = subprocess.run(
+        ["bash", str(POST_HOOK)], input=json.dumps(payload),
+        capture_output=True, text=True,
+        env={"CLAUDE_CODE_DIR": str(tmp_path), "PATH": "/usr/bin:/bin"},
+    )
+    log = tmp_path / "tool-repair-telemetry.log"
+    return proc.stdout.strip(), (log.read_text() if log.exists() else "")
+
+
+@pytest.mark.parametrize("bad,expected", [
+    ({"limit": None}, "null=(limit)"),
+    ({"files": '["a.txt"] '}, "stringified=(files)"),
+    ({"opts": {}}, "empty_obj=(opts)"),
+    ({"path": "/x/[notes.md](http://notes.md)"}, "autolink=(path)"),
+])
+def test_post_hook_detects_every_pattern_it_exists_to_collect(bad, expected, tmp_path):
+    """All four were silent. `paths(scalars)` emits a path only for non-null
+    scalars, so the null select could never fire; verified on jq 1.8.1 that
+    `{"limit":null,"s":"x"} | [paths(scalars)]` is [["s"]]."""
+    envelope = {"tool": "edit", "input": bad, "result": {"isError": False}}
+    out, log = run_post_hook(envelope, tmp_path)
+    assert expected in log, f"telemetry {log!r} missing {expected!r} (stdout {out!r})"
+
+
+def test_post_hook_reports_a_clean_call_as_clean(tmp_path):
+    envelope = {"tool": "edit", "input": {"limit": 5, "path": "notes.md"},
+                "result": {"isError": False}}
+    out, log = run_post_hook(envelope, tmp_path)
+    assert "repairable patterns" not in out
+
+
+def test_post_hook_survives_a_quote_in_a_field_name(tmp_path):
+    envelope = {"tool": "edit", "input": {'we"ird': None}, "result": {"isError": False}}
+    out, log = run_post_hook(envelope, tmp_path)
+    assert "null=" in log
+
+
+def test_both_hooks_are_free_of_the_dead_pattern():
+    """Guard against paths(scalars) creeping back into either hook."""
+    for hook in (HOOK, POST_HOOK):
+        body = hook.read_text()
+        code = "\n".join(
+            line for line in body.splitlines() if not line.lstrip().startswith("#")
+        )
+        assert "paths(scalars)" not in code, f"{hook.name} reintroduced paths(scalars)"
+
+
+def test_opencode_plugin_reads_the_published_hook_types():
+    """The adapter invented its own hook shape. Checked against the real
+    @opencode-ai/plugin types, where `output` carries only `args` and the tool
+    name and callID live on `input`."""
+    plugin = (REPO / "adapters" / "opencode" / "plugin.ts").read_text()
+    code = "\n".join(
+        line for line in plugin.splitlines() if not line.lstrip().startswith("//")
+    )
+    assert "output.tool" not in code, "tool name must come from input.tool"
+    assert "input.id" not in code, "notes must be keyed on input.callID"
+    assert "input.callID" in code
+    assert "input.tool" in code

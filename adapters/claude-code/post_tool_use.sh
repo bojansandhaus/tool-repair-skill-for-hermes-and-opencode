@@ -40,16 +40,20 @@ mkdir -p "$LOG_DIR"
 LOG_FILE="$LOG_DIR/tool-repair-telemetry.log"
 
 # Check each pattern
+# NOTE: this must be `paths(. == null)`, not `paths(scalars) as $p | select(getpath($p) == null)`.
+# paths(scalars) emits a path only for non-null scalars, so the select could
+# never fire and this check silently reported no null fields at all. Verified on
+# jq 1.8.1: `{"limit":null,"s":"x"} | [paths(scalars)]` is [["s"]], and the
+# select returns []. The pre_tool_use.sh hook had the same defect and was fixed
+# in v1.0.1; this hook was missed.
 NULL_FIELDS=$(echo "$ARGS_JSON" | jq -r '
-  [paths(scalars) as $p
-  | select(getpath($p) == null)
+  [paths(. == null) as $p
   | ($p | join("."))]
   | join(",")
 ')
 
 STRINGIFIED=$(echo "$ARGS_JSON" | jq -r '
-  [paths(scalars) as $p
-  | select((getpath($p) | type) == "string")
+  [paths(type == "string") as $p
   | select(getpath($p) | test("^\\s*\\["))
   | ($p | join("."))]
   | join(",")
@@ -63,8 +67,7 @@ EMPTY_OBJ=$(echo "$ARGS_JSON" | jq -r '
 ')
 
 AUTOLINKS=$(echo "$ARGS_JSON" | jq -r '
-  [paths(scalars) as $p
-  | select((getpath($p) | type) == "string")
+  [paths(type == "string") as $p
   | select(getpath($p) | test("\\[[^]]+\\]\\(https?://"))
   | ($p | join("."))]
   | join(",")

@@ -56,3 +56,11 @@ by `tests/test_tool_repair.py`, which fails against v1.0.0.
 - Added MIT `LICENSE` (the README and manifest claimed MIT; the file did not exist).
 - Added CI, `SECURITY.md` and `CONTRIBUTING.md`.
 - Corrected the README: the "valid inputs are never touched" claim, the "Four Patterns" heading that listed five rules, the roadmap entry for null handling that shipped in v1.0.1, and the `deduplicate_repair_notes` description.
+
+## 1.0.3 - 2026-10-05
+
+- Fixed the OpenCode adapter: it read the tool name from `output.tool` and keyed notes on `input.id`, neither of which exists in the published `@opencode-ai/plugin` hook types, so `toolName` was undefined on every call and concurrent calls to one tool stole each other's notes.
+- Closed four Python/TypeScript divergences: `anyOf`/`oneOf` array variants, the bare-host autolink form, and Python's missing whitespace trim before the stringified-array test.
+- Fixed `post_tool_use.sh`, which still used the dead `paths(scalars)` null check that v1.0.1 fixed in `pre_tool_use.sh` only.
+- Added a TypeScript CI job. Nothing ran the TypeScript before, so every divergence above shipped green.
+- Documented that the OpenCode adapter passes no schema, so its two schema-aware repairs cannot fire. Not fixed: it needs the tool registry to supply one.

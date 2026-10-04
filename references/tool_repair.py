@@ -57,7 +57,11 @@ def _parse_stringified_arrays(args: dict) -> Tuple[dict, bool, List[str]]:
     applied = False
     repaired_keys = []
     for k, v in args.items():
-        if isinstance(v, str) and v.startswith("[") and v.endswith("]"):
+        # Trim before testing: a model that emits `'["a.txt"] '` with a trailing
+        # space used to wrap the whole junk string as a single array element,
+        # which is worse than leaving it alone. The TypeScript port already
+        # trimmed, so the two disagreed here.
+        if isinstance(v, str) and v.strip().startswith("[") and v.strip().endswith("]"):
             try:
                 parsed = json.loads(v)
                 if isinstance(parsed, list):

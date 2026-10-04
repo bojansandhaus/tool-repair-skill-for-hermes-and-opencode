@@ -23,26 +23,35 @@ interface PluginContext {
   worktree: string;
 }
 
-/** Shape of the tool.execute.before input. */
+// These mirror @opencode-ai/plugin's `Hooks` interface. The previous shapes
+// were invented: they put `tool` on the output object and an `id` on the input.
+// The published types are
+//
+//   "tool.execute.before"?: (input: { tool, sessionID, callID },
+//                            output: { args: any }) => Promise<void>
+//   "tool.execute.after"?:  (input: { tool, sessionID, callID, args },
+//                            output: { title, output, metadata }) => Promise<void>
+//
+// so `output.tool` was always undefined, which made `toolName` undefined on
+// every call and `stashKey` fall through to the bare tool name for every
+// concurrent call to the same tool. Verified against the package tarball
+// (dist/index.d.ts) rather than from memory.
 interface ToolExecuteInput {
   tool: string;
-  args: Record<string, unknown>;
-  id?: string;
+  sessionID: string;
+  callID: string;
 }
 
-/** Shape of the tool.execute.before output (mutated by hook). */
-interface ToolExecuteOutput {
-  tool: string;
+/** `output` carries only `args`; the tool name is on `input`. */
+interface ToolExecuteBeforeOutput {
   args: Record<string, unknown>;
-  repairNotes?: string[];
 }
 
-/** Shape of the tool.execute.after output. */
+/** The after hook receives no mutable output slot for notes. */
 interface ToolExecuteAfterOutput {
-  tool: string;
-  args: Record<string, unknown>;
-  result: unknown;
-  repairNotes?: string[];
+  title: string;
+  output: string;
+  metadata: unknown;
 }
 
 /**
@@ -56,7 +65,7 @@ export const ToolRepairPlugin = async (
 ): Promise<{
   "tool.execute.before": (
     input: ToolExecuteInput,
-    output: ToolExecuteOutput,
+    output: ToolExecuteBeforeOutput,
   ) => Promise<void>;
   "tool.execute.after": (
     input: ToolExecuteInput,
@@ -70,7 +79,8 @@ export const ToolRepairPlugin = async (
 
   return {
     "tool.execute.before": async (input, output) => {
-      const toolName = output.tool;
+      // The tool name is on `input`, not `output`.
+      const toolName = input.tool;
       const args = output.args ?? {};
 
       const [fixedArgs, notes] = repairFunctionArgs(toolName, args);
@@ -79,24 +89,26 @@ export const ToolRepairPlugin = async (
         // Mutate args in place so the tool receives the fixed version
         output.args = fixedArgs;
 
-        // Stash notes for the after hook
-        const stashKey = input.id ?? toolName;
-        pendingNotes.set(stashKey, notes);
+        // Key on callID. Keying on the tool name meant two concurrent calls to
+        // the same tool overwrote each other's notes, so one call could be told
+        // about a defect it did not have while its real repair went unmentioned.
+        pendingNotes.set(input.callID, notes);
 
         console.log(
-          `[tool-repair] Repaired ${toolName}: ${notes.join("; ")}`,
+          `[tool-repair] Repaired ${toolName} (${input.callID}): ${notes.join("; ")}`,
         );
       }
     },
 
     "tool.execute.after": async (input, output) => {
-      const stashKey = input.id ?? output.tool;
-      const notes = pendingNotes.get(stashKey);
-      if (notes && notes.length > 0) {
-        // Attach repair notes to the output so the model sees them
-        output.repairNotes = notes;
-        pendingNotes.delete(stashKey);
-      }
+      const notes = pendingNotes.get(input.callID);
+      if (!notes || notes.length === 0) return;
+      pendingNotes.delete(input.callID);
+      // The after hook's output has no note field, and OpenCode's own output
+      // shape is `title`/`output`/`metadata`. Prepending the notes to the tool
+      // output is the documented way to get them in front of the model, and it
+      // cannot lose them the way a non-existent property did.
+      output.output = `[tool-repair] ${notes.join("; ")}\n${output.output ?? ""}`;
     },
   };
 };
