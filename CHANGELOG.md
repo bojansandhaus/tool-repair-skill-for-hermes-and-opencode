@@ -50,3 +50,9 @@ by `tests/test_tool_repair.py`, which fails against v1.0.0.
 
 - No behaviour outside the four defects above. `local_model`-style settings, note
   text, and the array repairs are untouched.
+
+## 1.0.2 - 2026-10-05
+
+- Added MIT `LICENSE` (the README and manifest claimed MIT; the file did not exist).
+- Added CI, `SECURITY.md` and `CONTRIBUTING.md`.
+- Corrected the README: the "valid inputs are never touched" claim, the "Four Patterns" heading that listed five rules, the roadmap entry for null handling that shipped in v1.0.1, and the `deduplicate_repair_notes` description.
