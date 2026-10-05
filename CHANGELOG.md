@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased
+
+- Removed the "Hermes Integration (Complete: Built and Tested)" section from `SKILL.md`. It claimed three patched Hermes files and a completed agent-core integration. None of it exists: at Hermes HEAD `98d8ea79af`, `grep -rn repair_function_args --include=*.py` returns nothing, `agent/tool_repair.py` does not exist, and no `tool_repair` string appears in the Hermes source or in `~/.hermes/config.yaml`. The section now states plainly that the integration is manual and that the repo ships no patch file and no installer.
+- The v1.0.3 entry below said a TypeScript CI job was added. It was not: `.github/workflows/ci.yml` had no Node, npx or parity step, so `tests/parity.test.ts` (21 tests) had never run in CI. There is now a `typescript` job on `actions/setup-node@v4` with Node 22, running `npx --yes -p typescript@5 -p tsx@4 tsx --test tests/parity.test.ts`.
+- Removed the `agent.tool_repair: true` instruction from `README.md`. No such key exists in Hermes, so setting it was a silent no-op.
+- Corrected the repair count from four to five in `SKILL.md` (frontmatter description included, since that is what a skill loader matches on) and in `adapters/opencode/tool_repair.ts`. Noted that two of the five are schema-gated, which the old text called universal.
+- Corrected the library size claim: `references/tool_repair.py` is 337 lines, not 297.
+- Removed the `references/gitflic-publishing.md` row from the reference table. That file is not in `references/`.
+- Marked the GitFlic mirror as unreachable instead of claiming it is kept identical to GitHub: the project URL returns HTTP 404.
+- Replaced the dead `x.com/CommandCodeAI/status/1927626163496718571` link (HTTP 404) in `README.md` with two live CommandCode URLs. Attribution kept, since the approach is genuinely theirs.
+- Rewrote the production-scale claims. "Over 56,000 repair invariants" and "a trillion tokens per month" had no supporting artefact in this repo and do not match the source material, which reports roughly 1M repaired tool calls per 1T tokens. Those figures are now attributed to the author with a resolvable citation, and a third-party decompilation count is given in their place.
+- Added `.pytest_cache/` to `.gitignore`.
+- Updated `CONTRIBUTING.md`: the Python suite is 34 tests, not 24, and the TypeScript parity command is documented alongside it.
+
 ## 1.0.1 — 2026-10-04
 
 Four defects fixed. All four were found by reviewing the code and are now pinned

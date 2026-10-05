@@ -24,3 +24,15 @@ jobs:
         run: bash -n adapters/claude-code/pre_tool_use.sh adapters/claude-code/post_tool_use.sh
       - name: Byte-compile
         run: python -m compileall -q references tests
+
+  typescript:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      # The repo has no package.json, so the parity suite runs through npx. The
+      # command matches the header comment in tests/parity.test.ts.
+      - name: TypeScript parity tests
+        run: npx --yes -p typescript@5 -p tsx@4 tsx --test tests/parity.test.ts

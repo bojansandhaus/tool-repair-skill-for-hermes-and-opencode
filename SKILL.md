@@ -1,6 +1,6 @@
 ---
 name: tool-call-repair-patterns
-description: Validate-then-repair patterns for tool call resilience. Four deterministic repairs, repair notes, and the structural insight that tool confusion is a harness problem, not a model problem. Based on CommandCode's approach that made DeepSeek V4 Pro outperform Opus 4.7 on tool calling.
+description: Validate-then-repair patterns for tool call resilience. Five deterministic repairs, repair notes, and the structural insight that tool confusion is a harness problem, not a model problem. Based on CommandCode's approach that made DeepSeek V4 Pro outperform Opus 4.7 on tool calling.
 version: 1.3.0
 author: Hermione
 ---
@@ -43,9 +43,11 @@ Everything in the box is the harness. The model only provides raw JSON and recei
 
 **Critical rule:** Parse the input as-is first. If it succeeds, ship it. Valid inputs are never touched. Only spend repair budget at paths the validator actually disagreed at. This prevents silent corruption of valid data (e.g. writeFile content that happens to be JSON-shaped).
 
-## The Four Universal Repair Patterns
+## The Four Recurring Schema Mistakes, Plus the Auto-Link Unwrap
 
-Across DeepSeek-Flash, DeepSeek V4 Pro, GLM, Qwen: the same four mistakes repeat. ~90% of all tool call failures are one of these.
+Across DeepSeek-Flash, DeepSeek V4 Pro, GLM, Qwen: the same four schema mistakes repeat. CommandCode reports that roughly 90% of tool call failures are one of these four (https://commandcode.ai/docs/harness-engineering/tool-call-repairs). The library in this repo implements those four plus a fifth repair, the markdown auto-link unwrap described in section 5.
+
+Two of the four are schema-gated and only fire when a tool schema is supplied: empty-object-to-array and bare-string-wrap. Without a schema, only the three ungated repairs run (null-omit, json-array-parse, autolink-unwrap).
 
 ### 1. Null-Omit: `null` for optional fields
 
@@ -95,7 +97,7 @@ Format for repair notes:
 
 ## Relational Invariants (Different Fix Than Shape)
 
-Shape problems (wrong type, missing key, wrong container) → the four repairs above handle these.
+Shape problems (wrong type, missing key, wrong container) are handled by the four schema repairs above, and the auto-link unwrap handles the path-shaped one.
 
 Relational problems (paired fields that must co-occur) → need a different approach. Don't fix with input repair because each field is independently valid. Instead:
 
@@ -105,7 +107,7 @@ Relational problems (paired fields that must co-occur) → need a different appr
 
 **Repair where you can. Extend semantics where you can't. Surface the choice either way.**
 
-## The Markdown Auto-Link Leak (Bonus)
+## 5. The Markdown Auto-Link Leak
 
 DeepSeek models sometimes emit file paths as markdown auto-links:
 
@@ -151,28 +153,36 @@ Track in a simple JSON file or statsd metric. Watch for:
 
 ## Lessons from Production Scale
 
-The four universal patterns are the core, but real-world deployment grows
-beyond them. A harness that started with four repairs now has over 56,000
-repair invariants. Here is what that scale teaches us.
+These are the author's account of how the approach evolved at CommandCode, restated from the public write-ups. The figures below are theirs to stand behind, not measurements this repo can verify: nothing in this repository instruments production traffic, and no artefact here records how many repairs have fired. Treat the numbers as reported experience, not as evidence you can check here.
 
-### The 4 to 56,000 Evolution
+The recurring schema repairs are the core, but real-world deployment grows
+beyond them. A harness that started with four repairs grows a large catalogue of
+per-model edge cases. CommandCode documents the shape of that growth: a repair
+layer across many tools and models, ordered rules, and one relational default
+(https://commandcode.ai/docs/harness-engineering/tool-call-repairs). The
+published rate is roughly 1M tool calls repaired per 1T tokens of production
+traffic. A third-party analysis of the decompiled implementation counts about 13
+distinct repair mechanisms in total, including pre-parse strategies, not 56,000
+invariants
+(https://github.com/anxkhn/command-code-decompiled/blob/decompile-v0.33.0/TOOL-REPAIR.md).
+
+### How the Catalogue Grew
 
 It started with four deterministic repairs across ~200 lines. Each was
-model-agnostic and covered the most frequent failures. Over time, as more
+model-agnostic and covered the most frequent failures. As more
 models were added (DeepSeek Flash, GLM, Qwen, Kimi K2.6, MiniMax), new
 patterns emerged that were model-specific or language-specific. The repair
-count grew to 12-16, then to 36,000, and eventually to over 56,000 small
-migration rules.
+count grew beyond the original four, and the catalogue is a living one.
 
-The invariant count goes up and down. Models improve with new releases, so
+The count goes up and down. Models improve with new releases, so
 some repairs become unnecessary and are retired. Other repairs are added as
-new quirks are discovered. The four universal patterns stay constant.
+new quirks are discovered. The four recurring schema repairs stay constant.
 Everything else is a growing catalog of edge cases per-model, per-language,
 per-scenario.
 
 **If you start implementing this:** build the four core repairs first. Add
 model-specific and language-specific migrations on top, measured against
-telemetry. Do not start with 56,000 rules. Let the data tell you where to
+telemetry. Do not start with a large hand-written rule set. Let the data tell you where to
 grow.
 
 ### Alpha Male Energy
@@ -182,8 +192,8 @@ when they receive a validation error, they repeat the same mistake rather
 than adapting. It is not confusion or bad memory. The model is convinced its
 output is correct and the validator is wrong.
 
-This manifests as 56 consecutive identical bad tool calls before the model
-finally changes its format. Every one of those 56 round-trips wastes tokens,
+This manifests as many consecutive identical bad tool calls before the model
+finally changes its format. Every one of those round-trips wastes tokens,
 breaks session flow, and degrades overall output quality. A model receiving
 a wall of Zod error blobs cannot recover because the error messages are not
 in a form the model can read.
@@ -198,15 +208,16 @@ about preserving flow so the model never enters a defensive loop.
 
 Tool call error rates are not static. They spike when inference capacity is
 under strain. The same model that makes zero mistakes at 2 AM will produce
-dozens of bad tool calls at peak usage hours every one of the four universal
-patterns. This pattern is reproducible across providers and model families.
+dozens of bad tool calls at peak usage hours, and those failures land on the
+same recurring schema repairs. The authors report this pattern as reproducible
+across providers and model families.
 
 When the model is overloaded (high request volume, shared compute, degraded
 inference hardware), output quality drops in characteristic ways: wrong types
 become more frequent, nulls appear where numbers should be, stringified
 arrays proliferate, and markdown auto-links leak through path fields. The
-harness saw this hundreds of thousands of times across a trillion tokens per
-month of production traffic.
+harness at CommandCode saw this repeatedly over production traffic at the rate
+quoted above: roughly 1M repaired tool calls per 1T tokens.
 
 **Practical takeaway:** if your harness seems to work fine in testing but
 fails under real usage, you are not seeing a regression in your code. You
@@ -219,53 +230,41 @@ shared-infrastructure variance.
 
 When I receive a validation error from a tool, I should:
 
-1. **Stay calm**: it's almost certainly one of the four patterns above. Don't waste context re-reading the entire schema.
+1. **Stay calm**: it's almost certainly one of the recurring schema mistakes above. Don't waste context re-reading the entire schema.
 2. **Be surgical**: the error message tells me exactly which field and what type was expected. Fix only that field.
 3. **Note the fix** in my reasoning so I don't repeat it this session.
 4. **Use the first successful call's repair pattern** as a template for the rest of the session (the model tends to make the same mistake consistently within a session).
 
-## Hermes Integration (Complete: Built and Tested)
+## Hermes Integration (Manual, Not Shipped)
 
-This skill ships with a working Python repair library at `references/tool_repair.py` that is **now integrated into the Hermes agent core**. The integration uses a side-channel pattern because Hermes' plugin hooks do not support argument mutation.
+This skill ships a working Python repair library at `references/tool_repair.py`.
+**It is not integrated into the Hermes agent core.** No file in this repository
+patches Hermes, and Hermes contains no repair layer: as of Hermes HEAD
+`98d8ea79af`, `grep -rn repair_function_args --include=*.py` over the tree
+returns nothing, `agent/tool_repair.py` does not exist, and no `tool_repair`
+string appears anywhere in the source or in `~/.hermes/config.yaml`.
 
-### Files changed
+Wiring it up is a manual two-call integration a consumer writes themselves:
 
-| File | Change | Lines added |
-|------|--------|-------------|
-| `agent/agent_runtime_helpers.py` | Added `_SEMANTIC_REPAIR_NOTES` dict + `pop_semantic_repair_notes()` helper + semantic repair call in `sanitize_tool_call_arguments()` | ~30 |
-| `agent/tool_dispatch_helpers.py` | Added `_pop_repair_notes()` helper + repair note appending logic inside `make_tool_result_message()` | ~25 |
-| `agent/tool_repair.py` | New file: the repair library | 297 |
+1. **`repair_function_args` inside `sanitize_tool_call_arguments`**
+   (`agent/agent_runtime_helpers.py`). Run it after `json.loads()` has already
+   succeeded, on the parsed dict. If repairs were applied, write the fixed JSON
+   back to `function["arguments"]`.
 
-### How the side channel works
+2. **`deduplicate_repair_notes` in the tool-result builder**
+   (`agent/tool_dispatch_helpers.py`, `make_tool_result_message`). It appends
+   the notes for a call to the result content and refuses to stack the same
+   note across turns, so the model sees what was fixed once.
 
-```
-sanitize_tool_call_arguments()                make_tool_result_message()
-  |                                              |
-  |- json.loads(args)  ✓                        |
-  |- repair_function_args() → notes             |
-  |- _SEMANTIC_REPAIR_NOTES[tc_id] = notes  ----|
-  |- update function["arguments"]               |
-  |                                              |- _pop_repair_notes(tc_id) → notes
-  |                                              |- append notes to result content
-  |                                              |- return result dict with notes
-```
+Pass the tool's JSON schema as `tool_schema` when you have it. Two of the five
+repairs are schema-gated and stay dormant without one.
 
-1. **`sanitize_tool_call_arguments`** (runs before dispatch): after `json.loads()` succeeds, calls `repair_function_args()` on the parsed dict. If repairs were applied, updates `function["arguments"]` with the fixed JSON and stores the repair notes in `_SEMANTIC_REPAIR_NOTES` keyed by `("", tool_call_id)`.
+### Why it is manual
 
-2. **`make_tool_result_message`** (runs when the tool completes): queries `_SEMANTIC_REPAIR_NOTES` for any pending notes matching the tool_call_id. If found, appends them to the tool result content (handles string, list, and dict/multimodal shapes). The key is consumed once: no memory leak.
-
-3. The model receives the successful tool result with the repair note appended. It self-corrects on the next turn.
-
-### Key design decisions
-
-- **Validate-then-repair**: `json.loads()` runs first. If it succeeds and the args are semantically valid, they pass through untouched.
-- **Side channel, not global state**: The dict is module-level but keyed by unique tool_call_id. Each entry consumed exactly once.
-- **Content-shape agnostic**: Repair note appending handles string, list, and dict result shapes.
-- **Plugin-optional**: Works without a plugin by hooking into existing Hermes functions.
-
-### Plugin limitation
-
-The `pre_tool_call` hook only supports blocking a tool. It cannot modify arguments. Until hooks support argument mutation, the agent-core modification is the only path. See `references/plugin-architecture.md`.
+The Hermes `pre_tool_call` hook can only block a tool call. It cannot modify
+arguments. There is no argument-mutating hook to hang this on, so the two calls
+above are hand-written code in the harness, not configuration. See
+`references/plugin-architecture.md` for the proposed hook surface.
 
 ### Available reference files
 
@@ -274,13 +273,16 @@ The `pre_tool_call` hook only supports blocking a tool. It cannot modify argumen
 | `references/tool_repair.py` | Working Python library. Import and call `repair_function_args()` |
 | `references/plugin-architecture.md` | Full plugin architecture proposal with config, hooks, telemetry, schema hints |
 | `references/plugin.yaml` | Example plugin metadata |
-| `references/gitflic-publishing.md` | GitFlic API reference for creating repos and pushing to secondary remote |
 
 ## Repositories
 
-Source code and README at [github.com/bojansandhaus/tool-repair-skill-for-hermes-and-opencode](https://github.com/bojansandhaus/tool-repair-skill-for-hermes-and-opencode) (public) and
-[gitflic.ru/bojansandhaus/tool-repair-skill-for-hermes-and-opencode](https://gitflic.ru/project/bojansandhaus/tool-repair-skill-for-hermes-and-opencode) (private mirror).
-Both remotes are kept identical.
+Source code and README at [github.com/bojansandhaus/tool-repair-skill-for-hermes-and-opencode](https://github.com/bojansandhaus/tool-repair-skill-for-hermes-and-opencode) (public).
+
+A GitFlic mirror was announced at
+[gitflic.ru/project/bojansandhaus/tool-repair-skill-for-hermes-and-opencode](https://gitflic.ru/project/bojansandhaus/tool-repair-skill-for-hermes-and-opencode).
+As of 2026-10-05 that URL returns HTTP 404, so the mirror is currently
+unreachable and its contents cannot be confirmed to match GitHub. Treat GitHub
+as the only authoritative remote.
 
 ## Pitfalls
 
@@ -288,11 +290,11 @@ Both remotes are kept identical.
 - **Valid-content protection**: Schema-aware array repairs only fire when the schema confirms array type. Without a schema, only safe universal repairs run (null-strip, stringified-array-parse, autolink-unwrap).
 - **No infinite stacking**: `deduplicate_repair_notes()` prevents the same note from being appended across multiple turns.
 - **No em dashes in skill content**: The SOUL.md format rules prohibit em dashes. Use colons, semicolons, or periods instead. This applies to every file in the skill: SKILL.md, reference docs, templates, scripts. Check before writing.
-- **Side channel lifecycle**: Entries are consumed when `make_tool_result_message` runs. If a tool call id is stored but never dispatched (e.g. an earlier turn's abandoned call), the dict entry persists until overwritten: negligible in practice since tool_call_id generation is strongly unique.
+- **Side channel lifecycle**: If you implement the two-call integration, consume the notes when `make_tool_result_message` runs. If a tool call id is stored but never dispatched (e.g. an earlier turn's abandoned call), the entry persists until overwritten: negligible in practice since tool_call_id generation is strongly unique.
 
 ## This Is Not Model-Specific
 
-These patterns apply to ALL models, not just open ones. Commercial models just fail less often because they've memorized more contract variants. When they DO fail, it's the same four patterns. The harness should protect against them regardless of model tier.
+These patterns apply to ALL models, not just open ones. Commercial models just fail less often because they've memorized more contract variants. When they DO fail, it's the same recurring schema repairs. The harness should protect against them regardless of model tier.
 
 The largest commercial models eat the cost invisibly because they've seen enough contract variants during training. Open models pay it loudly and get dismissed for it. The harness is where you mediate between distributions.
 

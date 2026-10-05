@@ -1,7 +1,7 @@
 /**
  * tool_repair.ts — TypeScript port of the universal tool-call repair patterns.
  *
- * Ported from the Python tool_repair.py. Same four deterministic fixes,
+ * Ported from the Python tool_repair.py. Same five deterministic fixes,
  * same ordering constraints, same safety guards.
  *
  * Usage:
@@ -17,7 +17,7 @@ export interface RepairNote {
 }
 
 /**
- * Apply the four universal repair patterns to a tool-call arguments dict.
+ * Apply the five repair patterns to a tool-call arguments dict.
  *
  * @param functionName  Name of the tool being called (for telemetry/logging).
  * @param functionArgs  Parsed JSON arguments object (mutated in place).
