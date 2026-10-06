@@ -2,6 +2,29 @@
 
 ## Unreleased
 
+- **Added a DeepSeek Harness adapter** (`adapters/deepseek-harness/`): a
+  `PreToolUse` command hook plus registration instructions for the bridge
+  plugins the harness ships (`@deepseek-ai/dsh-hooks-claude-code`,
+  `@deepseek-ai/dsh-hooks-codex`). Written against the shipped `0.2.0-rc.2`.
+  The harness seam can deny a call but cannot rewrite its arguments, the same
+  limit the Claude Code adapter has, so this adapter blocks with a message
+  naming the offending fields and the model retries on the next turn.
+- **The DeepSeek Harness adapter reads different payload keys from the Claude
+  Code one, and that is load-bearing.** The harness bridges emit `tool_name` and
+  `tool_input`; the Claude Code adapter reads `.tool` and `.input`, which the
+  harness never sends. Feeding a harness-shaped payload with a null field to
+  the Claude Code hook returns `proceed`, so reusing it would have silently
+  disabled every repair. Pinned by a test.
+- The harness adapter's stringified-array check requires the value to actually
+  parse as a JSON array, matching the library's own bar. A leading `[` alone
+  is not enough, otherwise the hook would block legitimate bracketed prose like
+  `[1, 2] and [3, 4]`, which the repair layer must leave alone. The Claude Code
+  hook still uses the looser check; see below.
+- README and SKILL.md: adapter tables, install section, dependency table and
+  roadmap updated for the fourth framework. CI now syntax-checks the new hook.
+- `tests/test_deepseek_harness_adapter.py`: 14 tests covering the payload keys,
+  all three patterns, the valid-content cases, and the output contract.
+
 Documentation and CI corrections. This repository is a public, standalone
 project: what it documents is how to wire the repair layer into a Hermes
 harness, and every claim below is about this repository's own code, tests and

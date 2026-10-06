@@ -279,6 +279,7 @@ config toggle instead.
 | File | Purpose |
 |------|---------|
 | `references/tool_repair.py` | Working Python library. Import and call `repair_function_args()` |
+| `adapters/deepseek-harness/` | DeepSeek Harness adapter: a `PreToolUse` command hook, registered with a bridge plugin the harness ships |
 | `references/plugin-architecture.md` | Full plugin architecture proposal with config, hooks, telemetry, schema hints |
 | `references/plugin.yaml` | Example plugin metadata |
 
