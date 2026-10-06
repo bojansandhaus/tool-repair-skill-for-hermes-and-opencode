@@ -6,7 +6,7 @@
 
 A **harness-level** fix for LLM tool calling. Catches the common JSON
 formatting mistakes open models make and fixes them deterministically before
-the tool executor ever sees them. Ships with adapters for three agent
+the tool executor ever sees them. Ships with adapters for four agent
 frameworks:
 
 | Adapter | Language | Repair strategy |
@@ -14,6 +14,7 @@ frameworks:
 | **Hermes** (two calls) | Python | Mutate args pre-dispatch, then append repair notes to the result. Built and tested against this library's own 34-test Python suite and 21-test TypeScript parity suite. |
 | **OpenCode** (plugin) | TypeScript | `tool.execute.before` hook, mutates args directly |
 | **Claude Code** (hooks) | Bash + jq | `PreToolUse` block so the model retries, `PostToolUse` telemetry. **Cannot mutate arguments**: PreToolUse can only allow or block, so this adapter corrects by feedback, not in place. |
+| **DeepSeek Harness** (hook bridge) | Bash + jq | `PreToolUse` command hook registered with a harness bridge plugin. Also cannot mutate arguments: the seam allows deny, not rewrite. |
 
 Based on the approach that made DeepSeek V4 Pro outperform Opus 4.7 on tool
 calling (see [CommandCode's write-up on tool call repairs](https://commandcode.ai/docs/harness-engineering/tool-call-repairs),
@@ -116,10 +117,14 @@ harness-specific wiring.
 | Hermes | `SKILL.md` | `sanitize_tool_call_arguments` pre-dispatch + repair notes. |
 | OpenCode | `adapters/opencode/` | `tool.execute.before` TS plugin, mutates args directly |
 | Claude Code | `adapters/claude-code/` | `PreToolUse` block + `PostToolUse` telemetry (bash + jq) |
+| DeepSeek Harness | `adapters/deepseek-harness/` | `PreToolUse` command hook via a harness bridge plugin (bash + jq) |
 
 OpenCode has the cleanest integration because its `tool.execute.before` hook
-supports argument mutation. Claude Code is the most limited. `PreToolUse`
-can only block, not mutate, so it wastes a turn when it detects a pattern.
+supports argument mutation. Claude Code and DeepSeek Harness are the most
+limited: both can only block a call, not mutate it, so they waste a turn when
+they detect a pattern. The DeepSeek Harness adapter reads the harness' own
+payload keys (`tool_name`, `tool_input`), which is why it is a separate script
+rather than a shared one.
 
 See each adapter's README for setup instructions.
 
@@ -139,6 +144,7 @@ The core library (`tool_repair.py`) needs nothing beyond Python standard library
 | Hermes | Hermes Agent (any recent version), stdlib only for the library |
 | OpenCode | TypeScript, OpenCode CLI |
 | Claude Code | bash, jq |
+| DeepSeek Harness | `@deepseek-ai/dsh`, bash, jq |
 
 No pip packages, no npm modules, no external services for the core library.
 
@@ -207,6 +213,55 @@ Or prompt your agent:
 }
 ```
 
+### DeepSeek Harness
+
+Copy the hook, then register it with one of the bridge plugins the harness
+ships (`@deepseek-ai/dsh-hooks-claude-code` or `@deepseek-ai/dsh-hooks-codex`):
+
+```bash
+mkdir -p ~/.dsh/tool-repair
+cp adapters/deepseek-harness/pre_tool_use.sh ~/.dsh/tool-repair/pre_tool_use.sh
+chmod +x ~/.dsh/tool-repair/pre_tool_use.sh
+```
+
+Write `~/.dsh/tool-repair/hooks.json`:
+
+```json
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          { "type": "command", "command": "bash ~/.dsh/tool-repair/pre_tool_use.sh" }
+        ]
+      }
+    ]
+  }
+}
+```
+
+And add the bridge to `~/.dsh/cordis.patch.yml`:
+
+```yaml
+- id: hooks-claude-code
+  name: '@deepseek-ai/dsh-hooks-claude-code'
+  config:
+    configPath: ~/.dsh/tool-repair/hooks.json
+```
+
+Or prompt your agent:
+
+> Clone `https://github.com/bojansandhaus/tool-repair-skill-for-hermes-and-opencode`,
+> copy `adapters/deepseek-harness/pre_tool_use.sh` to
+> `~/.dsh/tool-repair/pre_tool_use.sh`, make it executable, write a `hooks.json`
+> registering it as a `PreToolUse` command hook, and add a
+> `@deepseek-ai/dsh-hooks-claude-code` entry pointing at it in
+> `~/.dsh/cordis.patch.yml`.
+
+See `adapters/deepseek-harness/README.md` for the Codex bridge variant, the
+verification steps, and the limitations.
+
 ### Clone the repo
 
 ```bash
@@ -243,6 +298,7 @@ shown in Components. There is no config key for this; it is harness code.
 - [x] Hermes integration (two calls: `repair_function_args` pre-dispatch, `deduplicate_repair_notes` on the result)
 - [x] OpenCode adapter (TypeScript plugin)
 - [x] Claude Code adapter (bash + jq hooks)
+- [x] DeepSeek Harness adapter (bash + jq hook via a bridge plugin)
 - [x] Schema-aware repairs (array fields, and required/nullable null safety)
 - [ ] Per-model repair telemetry (dashboard tab)
 - [ ] Model-specific repair profiles (DeepSeek, GLM, Kimi quirks)

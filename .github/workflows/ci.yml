@@ -21,7 +21,7 @@ jobs:
       - name: Module self-test
         run: python references/tool_repair.py
       - name: Shell hook syntax
-        run: bash -n adapters/claude-code/pre_tool_use.sh adapters/claude-code/post_tool_use.sh
+        run: bash -n adapters/claude-code/pre_tool_use.sh adapters/claude-code/post_tool_use.sh adapters/deepseek-harness/pre_tool_use.sh
       - name: Byte-compile
         run: python -m compileall -q references tests
 
