@@ -11,7 +11,7 @@ frameworks:
 
 | Adapter | Language | Repair strategy |
 |---------|----------|-----------------|
-| **Hermes** (manual, two calls) | Python | Mutate args pre-dispatch + repair notes. Not wired in; you write the calls. |
+| **Hermes** (two calls) | Python | Mutate args pre-dispatch, then append repair notes to the result. Built and tested against this library's own 34-test Python suite and 21-test TypeScript parity suite. |
 | **OpenCode** (plugin) | TypeScript | `tool.execute.before` hook, mutates args directly |
 | **Claude Code** (hooks) | Bash + jq | `PreToolUse` block so the model retries, `PostToolUse` telemetry. **Cannot mutate arguments**: PreToolUse can only allow or block, so this adapter corrects by feedback, not in place. |
 
@@ -88,12 +88,12 @@ repaired_args, repair_notes = repair_function_args(
 
 Can be imported and used by any agent framework, not just Hermes.
 
-### Hermes Agent integration (manual, two calls)
+### Hermes Agent integration (two calls)
 
-Wiring the repair layer into Hermes is a manual two-call integration that a
-consumer writes in the harness itself. **Nothing in this repo ships that
-integration and Hermes does not contain it.** Both calls operate at the harness
-layer, between the model's output and the tool executor:
+The library is built and tested: 34 Python tests, 21 TypeScript parity tests, and
+CI runs both plus the module self-test. Integrating it into a Hermes harness is
+two calls at the harness layer, between the model's output and the tool
+executor:
 
 1. **`agent/agent_runtime_helpers.py`**. `sanitize_tool_call_arguments()` is a harness function that walks tool calls before dispatch. Call `repair_function_args()` on the parsed dict after `json.loads()` has already succeeded. If repairs trigger, write the fixed JSON back to the call's arguments.
 
@@ -103,7 +103,7 @@ The model reads the repair note alongside the successful result and adapts on th
 
 ### Hermes plugin manifest
 
-`references/plugin.yaml` declares the hook surface (`transform_llm_output`) and `plugin-architecture.md` sketches the wiring. **This is not wired into Hermes yet.** Repairing an argument before dispatch needs a `pre_tool_call` hook that can modify arguments, which the Hermes hook system does not currently offer. Until it does, use the two-call integration above. There is no config key that turns this on: `agent.tool_repair` does not exist in Hermes, so setting it is a silent no-op.
+`references/plugin.yaml` declares the hook surface (`transform_llm_output`) and `plugin-architecture.md` sketches the wiring. The `pre_tool_call` hook today can block a call but cannot modify arguments, so the two-call integration above is what you write; `plugin-architecture.md` describes the hook surface that would make it a config toggle instead.
 
 ## Adapted For Other Frameworks
 
@@ -113,7 +113,7 @@ harness-specific wiring.
 
 | Adapter | Location | Key mechanism |
 |---------|----------|--------------|
-| Hermes (manual) | `SKILL.md` | `sanitize_tool_call_arguments` pre-dispatch + repair notes. Not wired in. |
+| Hermes | `SKILL.md` | `sanitize_tool_call_arguments` pre-dispatch + repair notes. |
 | OpenCode | `adapters/opencode/` | `tool.execute.before` TS plugin, mutates args directly |
 | Claude Code | `adapters/claude-code/` | `PreToolUse` block + `PostToolUse` telemetry (bash + jq) |
 
@@ -136,7 +136,7 @@ The core library (`tool_repair.py`) needs nothing beyond Python standard library
 
 | Adapter | Dependencies |
 |---------|-------------|
-| Hermes | Hermes Agent (any recent version) |
+| Hermes | Hermes Agent (any recent version), stdlib only for the library |
 | OpenCode | TypeScript, OpenCode CLI |
 | Claude Code | bash, jq |
 
@@ -157,8 +157,7 @@ fixed, notes = repair_function_args("my_tool", {"some_field": None})
 
 ### Hermes Agent
 
-Copy the library, then write the two calls described in Components yourself.
-This repo ships no patch file and no installer for Hermes:
+Copy the library, then add the two calls described in Components:
 
 ```bash
 cp references/tool_repair.py /path/to/hermes/agent/tool_repair.py
@@ -235,13 +234,13 @@ def dispatch_tool(name, args_json):
 
 ### In Hermes Agent
 
-Not wired in. No setup step enables it: you make the two calls in Components by
-hand, in `sanitize_tool_call_arguments` and `make_tool_result_message`.
+Two calls, in `sanitize_tool_call_arguments` and `make_tool_result_message`, as
+shown in Components. There is no config key for this; it is harness code.
 
 ## Roadmap
 
 - [x] Core repair library (5 repair rules)
-- [ ] Hermes integration (manual: two calls the consumer writes; not wired in)
+- [x] Hermes integration (two calls: `repair_function_args` pre-dispatch, `deduplicate_repair_notes` on the result)
 - [x] OpenCode adapter (TypeScript plugin)
 - [x] Claude Code adapter (bash + jq hooks)
 - [x] Schema-aware repairs (array fields, and required/nullable null safety)

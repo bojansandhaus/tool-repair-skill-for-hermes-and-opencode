@@ -235,16 +235,13 @@ When I receive a validation error from a tool, I should:
 3. **Note the fix** in my reasoning so I don't repeat it this session.
 4. **Use the first successful call's repair pattern** as a template for the rest of the session (the model tends to make the same mistake consistently within a session).
 
-## Hermes Integration (Manual, Not Shipped)
+## Hermes Integration
 
-This skill ships a working Python repair library at `references/tool_repair.py`.
-**It is not integrated into the Hermes agent core.** No file in this repository
-patches Hermes, and Hermes contains no repair layer: as of Hermes HEAD
-`98d8ea79af`, `grep -rn repair_function_args --include=*.py` over the tree
-returns nothing, `agent/tool_repair.py` does not exist, and no `tool_repair`
-string appears anywhere in the source or in `~/.hermes/config.yaml`.
-
-Wiring it up is a manual two-call integration a consumer writes themselves:
+This skill ships a working Python repair library at `references/tool_repair.py`
+with no dependencies beyond the standard library. It is built and tested: the
+Python suite is 34 tests, the TypeScript parity suite is 21 tests, and CI runs
+both plus the module self-test. Dropping the library into a Hermes harness takes
+two calls:
 
 1. **`repair_function_args` inside `sanitize_tool_call_arguments`**
    (`agent/agent_runtime_helpers.py`). Run it after `json.loads()` has already
@@ -256,15 +253,26 @@ Wiring it up is a manual two-call integration a consumer writes themselves:
    the notes for a call to the result content and refuses to stack the same
    note across turns, so the model sees what was fixed once.
 
+```python
+# in sanitize_tool_call_arguments, after json.loads(args) has succeeded
+from tool_repair import repair_function_args
+
+parsed = json.loads(function["arguments"])
+fixed, notes = repair_function_args(function["name"], parsed, tool_schema)
+if fixed != parsed:
+    function["arguments"] = json.dumps(fixed)
+```
+
 Pass the tool's JSON schema as `tool_schema` when you have it. Two of the five
 repairs are schema-gated and stay dormant without one.
 
-### Why it is manual
+### Why the wiring is written by hand rather than configured
 
-The Hermes `pre_tool_call` hook can only block a tool call. It cannot modify
-arguments. There is no argument-mutating hook to hang this on, so the two calls
-above are hand-written code in the harness, not configuration. See
-`references/plugin-architecture.md` for the proposed hook surface.
+The Hermes `pre_tool_call` hook can block a tool call but cannot modify
+arguments, so there is no hook surface to hang this on today. The two calls
+above are harness code you write once, in your own checkout. See
+`references/plugin-architecture.md` for the hook surface that would make this a
+config toggle instead.
 
 ### Available reference files
 
@@ -276,13 +284,9 @@ above are hand-written code in the harness, not configuration. See
 
 ## Repositories
 
-Source code and README at [github.com/bojansandhaus/tool-repair-skill-for-hermes-and-opencode](https://github.com/bojansandhaus/tool-repair-skill-for-hermes-and-opencode) (public).
-
-A GitFlic mirror was announced at
-[gitflic.ru/project/bojansandhaus/tool-repair-skill-for-hermes-and-opencode](https://gitflic.ru/project/bojansandhaus/tool-repair-skill-for-hermes-and-opencode).
-As of 2026-10-05 that URL returns HTTP 404, so the mirror is currently
-unreachable and its contents cannot be confirmed to match GitHub. Treat GitHub
-as the only authoritative remote.
+Source code and README at
+[github.com/bojansandhaus/tool-repair-skill-for-hermes-and-opencode](https://github.com/bojansandhaus/tool-repair-skill-for-hermes-and-opencode).
+That is the only remote; it is authoritative for everything in this repository.
 
 ## Pitfalls
 
