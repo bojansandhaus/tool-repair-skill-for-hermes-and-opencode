@@ -58,8 +58,16 @@ Fixed and asserted against the real hook, fed a real envelope on stdin.
 ## CI never ran the TypeScript
 
 The Python suite ran; the TypeScript did not, so any divergence above shipped
-green. There is now a second job that type-checks both adapters under `--strict`
-and runs the parity suite. No lockfile is committed.
+green. A second CI job now runs the parity suite.
+
+Correction, added after publication: this release note originally claimed that
+job type-checked both adapters under `--strict` and shipped in v1.0.3. It did
+not. `.github/workflows/ci.yml` at v1.0.3 contained no Node step at all, so the
+TypeScript parity suite had still never run in CI when this release was
+published. The job arrived later, on `actions/setup-node@v4` with Node 22,
+running `npx --yes -p typescript@5 -p tsx@4 tsx --test tests/parity.test.ts`. No
+lockfile is committed. The `tsc --strict` claim below is likewise a local check,
+not a CI gate.
 
 ## Verification
 
