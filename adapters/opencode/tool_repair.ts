@@ -161,11 +161,29 @@ function applyBareStringWrap(
 ): void {
   const schemaPaths = extractSchemaArrayPaths(schema);
   for (const [key, value] of Object.entries(args)) {
-    if (schemaPaths.has(key) && typeof value === "string") {
+    // A bracket-shaped string that failed to parse is not a bare string to
+    // wrap: it is either bracketed prose or a broken array serialization, and
+    // wrapping either one yields `["[not json]"]`, a real array holding junk.
+    // The Python port skips the same values, so the two stay in agreement.
+    if (
+      schemaPaths.has(key) &&
+      typeof value === "string" &&
+      !looksLikeStringifiedArray(value)
+    ) {
       args[key] = [value];
       notes.push(`bare strings wrapped as single-element arrays: ${key}`);
     }
   }
+}
+
+/**
+ * True when a string is bracket-shaped, i.e. it tried to be a JSON array.
+ * `"[not json]"` and `"[1, 2] and [3, 4]"` both qualify; neither is a bare
+ * string, and neither should be turned into a one-element array.
+ */
+function looksLikeStringifiedArray(value: string): boolean {
+  const trimmed = value.trim();
+  return trimmed.startsWith("[") && trimmed.endsWith("]");
 }
 
 // ---------------------------------------------------------------------------

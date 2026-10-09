@@ -35,7 +35,7 @@ steps to return new values without re-checking the order.
 ## Running the checks
 
 ```sh
-python -m pytest tests -q          # 34 tests
+python -m pytest tests -q          # 98 tests
 python references/tool_repair.py   # module self-test, exit 0 on success
 bash -n adapters/claude-code/*.sh  # shell syntax
 ```
@@ -46,7 +46,7 @@ The TypeScript side has its own suite, and it guards the agreement between the
 two implementations:
 
 ```sh
-npx --yes -p typescript@5 -p tsx@4 tsx --test tests/parity.test.ts   # 21 tests
+npx --yes -p typescript@5 -p tsx@4 tsx --test tests/parity.test.ts   # 27 tests
 ```
 
 There is no `package.json`, so that command resolves TypeScript and tsx through

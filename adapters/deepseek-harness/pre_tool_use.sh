@@ -30,6 +30,18 @@ set -euo pipefail
 
 INPUT=$(cat)
 
+# A decision is the contract: every invocation prints exactly one JSON object
+# and exits 0. Unparseable stdin (a truncated payload, a non-JSON body, a bare
+# array) makes jq fail, and under `set -e` that kills the script at the first
+# extraction with exit 5 and EMPTY stdout, which is not a decision. The same
+# guard now sits in the Claude Code adapter's hook, for the same reason.
+# Proceed matches the no-tool-name path below: nothing to inspect, and this
+# hook's only failure mode is a spurious denial.
+if ! printf '%s' "$INPUT" | jq -e 'type == "object"' >/dev/null 2>&1; then
+  printf '%s\n' '{"decision": "proceed"}'
+  exit 0
+fi
+
 TOOL_NAME=$(printf '%s' "$INPUT" | jq -r '.tool_name // empty')
 ARGS_JSON=$(printf '%s' "$INPUT" | jq -c '.tool_input // {}')
 

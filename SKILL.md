@@ -1,7 +1,7 @@
 ---
 name: tool-call-repair-patterns
 description: Validate-then-repair patterns for tool call resilience. Five deterministic repairs, repair notes, and the structural insight that tool confusion is a harness problem, not a model problem. Based on CommandCode's approach that made DeepSeek V4 Pro outperform Opus 4.7 on tool calling.
-version: 1.3.0
+version: 1.0.5
 author: Hermione
 ---
 
@@ -239,7 +239,7 @@ When I receive a validation error from a tool, I should:
 
 This skill ships a working Python repair library at `references/tool_repair.py`
 with no dependencies beyond the standard library. It is built and tested: the
-Python suite is 34 tests, the TypeScript parity suite is 21 tests, and CI runs
+Python suite is 98 tests, the TypeScript parity suite is 27 tests, and CI runs
 both plus the module self-test. Dropping the library into a Hermes harness takes
 two calls:
 
@@ -265,6 +265,12 @@ if fixed != parsed:
 
 Pass the tool's JSON schema as `tool_schema` when you have it. Two of the five
 repairs are schema-gated and stay dormant without one.
+
+`repair_function_args` never mutates the dict you hand it: it deep-copies its
+input and repairs the copy, which is what makes the `if fixed != parsed`
+comparison above mean anything. Keep `parsed` around; comparing the returned
+object against itself, or mutating the dict in place before the comparison,
+silently discards every repair while the notes still claim one happened.
 
 ### Why the wiring is written by hand rather than configured
 

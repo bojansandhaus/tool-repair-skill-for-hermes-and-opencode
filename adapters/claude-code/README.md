@@ -11,10 +11,23 @@ Two hooks, two strategies:
 
 ### PreToolUse (block on detection)
 
-The `pre_tool_use.sh` script reads the incoming tool call, checks for the
-four common patterns (null fields, stringified arrays, empty objects,
-markdown auto-links), and blocks the call with a helpful message if it finds
-one. The model sees the message and retries with corrected format.
+The `pre_tool_use.sh` script reads the incoming tool call, checks for three
+repairable patterns (null fields, stringified arrays, markdown auto-links), and
+blocks the call with a helpful message if it finds one. The model sees the
+message and retries with corrected format. The empty-object pattern is
+telemetry-only and lives in `post_tool_use.sh`, so it is not checked here.
+
+Two of the three patterns are deliberately narrow, because this hook's only
+failure mode is blocking a call that was fine. The stringified-array check
+requires the value to actually parse as a JSON array, so prose like
+`[1, 2] and [3, 4]` in a `writeFile` content field passes through. The auto-link
+check requires the link text to equal the URL's own path component, so a real
+link like `[click](https://example.com)` passes through too. Both match the bar
+the repair library itself uses.
+
+The hook always answers with a decision. If stdin is unparseable (a truncated
+payload, a bare array, an empty body) it prints `{"decision": "proceed"}` and
+exits 0 rather than dying on a jq error with no output at all.
 
 This wastes a turn but prevents the bad call from reaching the tool executor.
 

@@ -171,5 +171,30 @@ def test_reports_the_offending_field_path_for_a_nested_null():
     assert "options.timeout" in out["message"]
 
 
+@pytest.mark.parametrize("stdin_text", [
+    "",
+    "not json",
+    '{"tool_name": "readFile",',
+    "[1,2,3]",
+    "null",
+])
+def test_answers_a_decision_on_unparseable_stdin(stdin_text):
+    """A decision is the contract for a command hook. jq failing under `set -e`
+    used to kill the script with exit 5 and EMPTY stdout, which the harness
+    reads as no decision at all. The Claude Code hook had the same hole and now
+    carries the same guard."""
+    proc = subprocess.run(
+        ["bash", str(HOOK)],
+        input=stdin_text,
+        capture_output=True,
+        text=True,
+    )
+    assert proc.returncode == 0, (stdin_text, proc.returncode, proc.stderr)
+    assert proc.stdout.strip(), (stdin_text, "empty stdout is not a decision")
+    out = json.loads(proc.stdout)
+    assert out["decision"] == "proceed", stdin_text
+    assert len(proc.stdout.strip().splitlines()) == 1, stdin_text
+
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-q"]))
