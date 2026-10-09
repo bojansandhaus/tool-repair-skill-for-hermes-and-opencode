@@ -118,13 +118,16 @@ harness-specific wiring.
 | OpenCode | `adapters/opencode/` | `tool.execute.before` TS plugin, mutates args directly |
 | Claude Code | `adapters/claude-code/` | `PreToolUse` block + `PostToolUse` telemetry (bash + jq) |
 | DeepSeek Harness | `adapters/deepseek-harness/` | `PreToolUse` command hook via a harness bridge plugin (bash + jq) |
+| Shared detectors | `adapters/shared/detect.sh` | the one copy of the bash + jq selects all three shell hooks source |
 
 OpenCode has the cleanest integration because its `tool.execute.before` hook
 supports argument mutation. Claude Code and DeepSeek Harness are the most
 limited: both can only block a call, not mutate it, so they waste a turn when
 they detect a pattern. The DeepSeek Harness adapter reads the harness' own
-payload keys (`tool_name`, `tool_input`), which is why it is a separate script
-rather than a shared one.
+payload keys (`tool_name`, `tool_input`), which is why it is a separate script,
+but its detectors are not a second copy: `adapters/shared/detect.sh` is sourced
+by all three shell hooks, so a change to a select cannot land in one adapter
+and miss the others the way it did in v1.0.1 and v1.0.5.
 
 See each adapter's README for setup instructions.
 
@@ -189,16 +192,22 @@ Or prompt your agent:
 
 ### Claude Code
 
-Copy the hook scripts and configure in `claude.json`:
+Copy the hook scripts and the shared detectors, then configure in `claude.json`:
 
 ```bash
-cp adapters/claude-code/*.sh .claude/hooks/
-chmod +x .claude/hooks/*.sh
+mkdir -p .claude/hooks
+cp -r adapters/claude-code adapters/shared .claude/hooks/
+chmod +x .claude/hooks/claude-code/*.sh
 ```
+
+The hooks read their detectors from `adapters/shared/detect.sh`, one copy
+shared with the DeepSeek Harness adapter and the telemetry hook, so the
+directory layout has to come with them. Set `TOOL_REPAIR_SHARED_DIR` if you
+install them somewhere else.
 
 Or prompt your agent:
 
-> Clone `https://github.com/bojansandhaus/tool-repair-skill-for-hermes-and-opencode.git`, copy the hook scripts from `adapters/claude-code/` to `.claude/hooks/`, make them executable, and add the `pre_tool_use` and `post_tool_use` hook entries to `claude.json`.
+> Clone `https://github.com/bojansandhaus/tool-repair-skill-for-hermes-and-opencode.git`, copy the hook scripts from `adapters/claude-code/` to `.claude/hooks/`, copy `adapters/shared/` next to them, make them executable, and add the `pre_tool_use` and `post_tool_use` hook entries to `claude.json`.
 
 ```json
 {
@@ -217,13 +226,14 @@ Or prompt your agent:
 
 ### DeepSeek Harness
 
-Copy the hook, then register it with one of the bridge plugins the harness
-ships (`@deepseek-ai/dsh-hooks-claude-code` or `@deepseek-ai/dsh-hooks-codex`):
+Copy the hook plus the shared detectors it reads, then register it with one of
+the bridge plugins the harness ships (`@deepseek-ai/dsh-hooks-claude-code` or
+`@deepseek-ai/dsh-hooks-codex`):
 
 ```bash
 mkdir -p ~/.dsh/tool-repair
-cp adapters/deepseek-harness/pre_tool_use.sh ~/.dsh/tool-repair/pre_tool_use.sh
-chmod +x ~/.dsh/tool-repair/pre_tool_use.sh
+cp -r adapters/deepseek-harness adapters/shared ~/.dsh/tool-repair/
+chmod +x ~/.dsh/tool-repair/deepseek-harness/pre_tool_use.sh
 ```
 
 Write `~/.dsh/tool-repair/hooks.json`:
@@ -235,7 +245,7 @@ Write `~/.dsh/tool-repair/hooks.json`:
       {
         "matcher": "*",
         "hooks": [
-          { "type": "command", "command": "bash ~/.dsh/tool-repair/pre_tool_use.sh" }
+          { "type": "command", "command": "bash ~/.dsh/tool-repair/deepseek-harness/pre_tool_use.sh" }
         ]
       }
     ]
@@ -255,14 +265,19 @@ And add the bridge to `~/.dsh/cordis.patch.yml`:
 Or prompt your agent:
 
 > Clone `https://github.com/bojansandhaus/tool-repair-skill-for-hermes-and-opencode`,
-> copy `adapters/deepseek-harness/pre_tool_use.sh` to
-> `~/.dsh/tool-repair/pre_tool_use.sh`, make it executable, write a `hooks.json`
+> copy `adapters/deepseek-harness/` and `adapters/shared/` into
+> `~/.dsh/tool-repair/` keeping the layout, make
+> `~/.dsh/tool-repair/deepseek-harness/pre_tool_use.sh` executable, write a `hooks.json`
 > registering it as a `PreToolUse` command hook, and add a
 > `@deepseek-ai/dsh-hooks-claude-code` entry pointing at it in
 > `~/.dsh/cordis.patch.yml`.
 
-See `adapters/deepseek-harness/README.md` for the Codex bridge variant, the
-verification steps, and the limitations.
+Note which bridge you are running. The Claude Code bridge forwards the whole
+arguments object, so every field is inspected. The Codex bridge forwards
+`tool_input: {command: commandOf(exec.arguments)}` — one string — so only
+`command`-shaped defects are detected there and the hook says so on stderr
+every time. See `adapters/deepseek-harness/README.md` for the Codex bridge
+variant, the verification steps, and the limitations.
 
 ### Clone the repo
 
