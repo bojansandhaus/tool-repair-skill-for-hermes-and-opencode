@@ -115,17 +115,72 @@ with `~/.dsh/tool-repair/hooks.json`:
 Or prompt your agent:
 
 > Clone `https://github.com/bojansandhaus/tool-repair-skill-for-hermes-and-opencode`,
-> copy `adapters/deepseek-harness/pre_tool_use.sh` to
-> `~/.dsh/tool-repair/pre_tool_use.sh`, make it executable, write a
+> copy `adapters/deepseek-harness/` **and** `adapters/shared/` into
+> `~/.dsh/tool-repair/` keeping the directory layout, make
+> `~/.dsh/tool-repair/deepseek-harness/pre_tool_use.sh` executable, write a
 > `hooks.json` that registers it as a `PreToolUse` command hook, and add a
 > `@deepseek-ai/dsh-hooks-claude-code` plugin entry pointing at it in
 > `~/.dsh/cordis.patch.yml`.
+
+`adapters/shared/detect.sh` is not optional. The three hooks in this repo share
+one copy of the jq detectors, so the copy of `pre_tool_use.sh` you drop into
+`~/.dsh/tool-repair/` needs `../shared/detect.sh` next to it. Copying the
+directories keeps that true; copying the two `.sh` files into one flat directory
+does not, unless you set `TOOL_REPAIR_SHARED_DIR` to wherever you put
+`detect.sh`. A hook that cannot find its detectors says so on stderr and
+answers `proceed` — it never blocks on the strength of half a detector.
 
 ### With the Codex bridge
 
 Same shape, different package and config key. The Codex bridge reads its own
 configuration format, so use its documented field names rather than the Claude
 Code ones.
+
+**The Codex bridge does not forward the arguments.** The Claude Code bridge
+sends `tool_input: exec.arguments`, the full parsed object. The Codex bridge
+sends:
+
+```json
+{
+  "hook_event_name": "PreToolUse",
+  "tool_name": "readFile",
+  "tool_input": { "command": "commandOf(exec.arguments)" }
+}
+```
+
+One string, and nothing else. Verified against the shipped bridges: under
+`@deepseek-ai/dsh-hooks-codex` the fields `files`, `limit`, `timeout` and
+`filePath` do not reach the hook at all, so for a tool whose arguments are not
+command-shaped there is nothing for this adapter to inspect and it answers
+`proceed`. That is not a payload-key mismatch and no change to the hook can
+recover those fields — the bridge has already dropped them.
+
+What the hook does do under the Codex bridge:
+
+- it reads `.tool_input.command` explicitly and scans that string for
+  command-shaped defects — a stringified array (`["a.txt", "b.txt"]`) or a
+  degenerate auto-link (`[notes.md](http://notes.md)`), naming `command` in the
+  block message;
+- it says so, on stderr, on every invocation:
+  `[tool-repair] codex bridge projection: only .tool_input.command is visible;
+  files, limit, timeout, filePath and every other field were not inspected`.
+
+So a user of this adapter under Codex can tell the difference between "this
+call had no defect" and "this call could not be inspected". Under the Claude
+Code bridge nothing is projected, every field is visible, and the message does
+not appear.
+
+```
+$ printf '%s' '{"tool_name":"exec","tool_input":{"command":"[\"a.txt\"]"}}' \
+  | bash adapters/deepseek-harness/pre_tool_use.sh
+{"decision":"block","message":"[tool-repair] Detected likely tool call issue in
+exec: stringified arrays in: command. ..."}
+```
+
+A full `exec` payload that carries `command` plus other fields is not the
+projection: `keys` is compared against exactly `["command"]`, so a real
+`{"command":"ls","timeout":null}` is inspected field by field and still reports
+`timeout`.
 
 ## Verification
 
@@ -151,8 +206,11 @@ check that the hook reads `tool_name` and `tool_input`.
 |---|---|
 | Seam cannot rewrite arguments | Block plus retry costs one turn |
 | `tool_input` is already-parsed JSON, so malformed-JSON errors never reach the hook | The hook cannot catch a call that failed to parse at all |
+| The Codex bridge projects the arguments to `command` alone | Only `command`-shaped defects are detected under Codex; `files`, `limit`, `timeout` and `filePath` are invisible there. Use the Claude Code bridge for field-level coverage |
+| A projected `command: null` still reports as a null field | The projection is not evidence the model sent a null, but it is not evidence it did not. The report is kept; suppressing it would be the silent-approval bug this adapter exists to fix |
 | Requires `jq` | Common, but it must be on `PATH` for the harness process |
 | Requires a bridge plugin | Both bridges ship with the harness; no extra install |
+| Requires the shared detectors | Copy `adapters/shared/` alongside this adapter, or set `TOOL_REPAIR_SHARED_DIR` |
 | Version-coupled to `0.2.0-rc.2` | The harness is a developer preview and ships breaking changes; re-check the `PreToolDecision` variants after upgrading |
 
 ## Telemetry

@@ -41,11 +41,15 @@ interrupting the flow.
 ## Installation
 
 ```bash
-# Copy hooks
-cp adapters/claude-code/pre_tool_use.sh .claude/hooks/pre_tool_use.sh
-cp adapters/claude-code/post_tool_use.sh .claude/hooks/post_tool_use.sh
-chmod +x .claude/hooks/*.sh
+# Copy the hooks and the shared detectors they read
+mkdir -p .claude/hooks
+cp -r adapters/claude-code adapters/shared .claude/hooks/
+chmod +x .claude/hooks/claude-code/*.sh
 ```
+
+`adapters/shared/detect.sh` holds the jq selects both hooks use — one copy, not
+one per hook — so the directory layout has to come with the scripts. Set
+`TOOL_REPAIR_SHARED_DIR` to wherever you put it if you install them apart.
 
 Add to `claude.json` in your project root:
 

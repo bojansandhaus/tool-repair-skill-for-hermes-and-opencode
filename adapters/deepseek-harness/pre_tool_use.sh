@@ -15,20 +15,35 @@
 # a corrected format on the next turn.
 #
 # Input: the bridge's stdin payload. Field names are the harness' own, not
-# Claude Code's: `tool_name` and `tool_input`, where `tool_input` is the
-# already-parsed arguments object. The Claude Code adapter in this repo reads
-# `.tool` and `.input`, which the harness never sends, so it cannot be reused
-# here.
+# Claude Code's: `tool_name` and `tool_input`. The detectors themselves are the
+# ones the Claude Code adapter uses — adapters/shared/detect.sh — so the two
+# adapters cannot drift apart again; only the envelope key names and the
+# decision wording are per-framework.
 #
 # Install: see this directory's README.md, or ask your agent:
-#   "Copy adapters/deepseek-harness/ from
-#    github.com/bojansandhaus/tool-repair-skill-for-hermes-and-opencode
-#    and register pre_tool_use.sh as a PreToolUse command hook with
+#   "Copy adapters/deepseek-harness/ and adapters/shared/ from
+#    github.com/bojansandhaus/tool-repair-skill-for-hermes-and-opencode into
+#    ~/.dsh/tool-repair/ keeping the directory layout, make
+#    ~/.dsh/tool-repair/deepseek-harness/pre_tool_use.sh executable, and
+#    register it as a PreToolUse command hook with
 #    @deepseek-ai/dsh-hooks-claude-code."
 
 set -euo pipefail
 
 INPUT=$(cat)
+
+# Detectors shared with the Claude Code adapter. Resolved from this file's own
+# location so the hook works from any working directory; TOOL_REPAIR_SHARED_DIR
+# overrides it for an install that flattens the layout.
+SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+SHARED_DIR="${TOOL_REPAIR_SHARED_DIR:-$SCRIPT_DIR/../shared}"
+if [ ! -f "$SHARED_DIR/detect.sh" ]; then
+  printf '%s\n' '{"decision": "proceed"}'
+  printf '%s\n' "[tool-repair] detectors not found at $SHARED_DIR/detect.sh; nothing was inspected" >&2
+  exit 0
+fi
+# shellcheck source=../../shared/detect.sh
+. "$SHARED_DIR/detect.sh"
 
 # A decision is the contract: every invocation prints exactly one JSON object
 # and exits 0. Unparseable stdin (a truncated payload, a non-JSON body, a bare
@@ -37,75 +52,36 @@ INPUT=$(cat)
 # guard now sits in the Claude Code adapter's hook, for the same reason.
 # Proceed matches the no-tool-name path below: nothing to inspect, and this
 # hook's only failure mode is a spurious denial.
-if ! printf '%s' "$INPUT" | jq -e 'type == "object"' >/dev/null 2>&1; then
+if ! tr_payload_is_object "$INPUT"; then
   printf '%s\n' '{"decision": "proceed"}'
   exit 0
 fi
 
-TOOL_NAME=$(printf '%s' "$INPUT" | jq -r '.tool_name // empty')
-ARGS_JSON=$(printf '%s' "$INPUT" | jq -c '.tool_input // {}')
+# The harness' own envelope: `tool_name` and `tool_input`.
+tr_detect "$INPUT" tool_name tool_input
 
-# No tool name or no arguments: nothing to inspect, let it through.
-if [ -z "$TOOL_NAME" ] || [ "$ARGS_JSON" = "null" ]; then
+# No tool name: nothing to inspect, let it through.
+if [ -z "$TR_TOOL_NAME" ]; then
   printf '%s\n' '{"decision": "proceed"}'
   exit 0
 fi
 
-ISSUES=""
-
-# Pattern 1: null values for optional fields.
-# NOTE: this must be `paths(. == null)`, not `paths(scalars) as $p |
-# select(getpath($p) == null)`. paths(scalars) does not emit a path for a null
-# value, so the select could never fire and the hook would approve every call
-# it was installed to catch.
-NULL_FIELDS=$(printf '%s' "$ARGS_JSON" | jq -r '
-  [paths(. == null) as $p
-  | ($p | join("."))]
-  | join(", ")
-')
-if [ -n "$NULL_FIELDS" ]; then
-  ISSUES="$ISSUES null values in: $NULL_FIELDS"
+# The Codex bridge does not forward the arguments. It projects them down to a
+# single command string, `tool_input: { command: commandOf(exec.arguments) }`,
+# so every field other than `command` — `files`, `limit`, `timeout`,
+# `filePath` — is gone before this script runs. The command itself is scanned
+# (tr_detect reads it explicitly), and the loss of everything else is reported
+# here rather than being waved through as though it had been inspected. Without
+# this line the hook answers `proceed` on exactly the calls it was installed to
+# catch and nobody can tell why.
+if [ "$TR_PROJECTED" = "1" ]; then
+  printf '%s\n' "[tool-repair] codex bridge projection: only .tool_input.command is visible; files, limit, timeout, filePath and every other field were not inspected" >&2
 fi
 
-# Pattern 2: stringified JSON arrays.
-# A leading "[" is not enough: the value must actually parse as a JSON array,
-# which is the bar the library itself uses. Without that second check this
-# pattern blocks legitimate bracketed prose such as "[1, 2] and [3, 4]", which
-# is content the repair layer is required to leave alone.
-STRINGIFIED=$(printf '%s' "$ARGS_JSON" | jq -r '
-  [paths(type == "string") as $p
-  | select((getpath($p) | type) == "string")
-  | select(getpath($p) | startswith("["))
-  | select((try (getpath($p) | fromjson | type) catch null) == "array")
-  | ($p | join("."))]
-  | join(", ")
-')
-if [ -n "$STRINGIFIED" ]; then
-  ISSUES="$ISSUES stringified arrays in: $STRINGIFIED"
-fi
-
-# Pattern 3: markdown auto-links leaking into a path-shaped value.
-# The link text must equal the URL's own path component, which is what makes
-# this a leak from the chat distribution rather than a real link. The URL may
-# be a bare host or host-plus-path, matching the library's own regex, so
-# `[notes.md](http://notes.md)` and `[notes.md](http://host/notes.md)` both
-# match while `[click](https://example.com)` does not. The value need not be
-# only a path: a leading directory is fine, hence the unanchored prefix.
-AUTOLINKS=$(printf '%s' "$ARGS_JSON" | jq -r '
-  [paths(type == "string") as $p
-  | select((getpath($p) | type) == "string")
-  | select(getpath($p) | test("\\[([^\\]]+)\\]\\(https?://(?:[^/]+/)?\\1\\)"))
-  | ($p | join("."))]
-  | join(", ")
-')
-if [ -n "$AUTOLINKS" ]; then
-  ISSUES="$ISSUES markdown auto-links in: $AUTOLINKS"
-fi
-
-if [ -n "$ISSUES" ]; then
+if [ -n "$TR_ISSUES" ]; then
   # Built with jq, not string interpolation: a field name or path containing a
   # quote or backslash would otherwise produce malformed JSON.
-  MESSAGE="[tool-repair] Detected likely tool call issue in $TOOL_NAME:$ISSUES. Fix the format and retry. Send proper types: null should be omitted, arrays should be real arrays, not strings."
+  MESSAGE="[tool-repair] Detected likely tool call issue in $TR_TOOL_NAME:$TR_ISSUES. Fix the format and retry. Send proper types: null should be omitted, arrays should be real arrays, not strings."
 
   jq -nc --arg m "$MESSAGE" '{"decision": "block", "message": $m}'
   exit 0

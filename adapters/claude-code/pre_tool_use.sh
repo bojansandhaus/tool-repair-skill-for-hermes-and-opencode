@@ -21,12 +21,38 @@
 #       }
 #     }
 #
+#   The detectors are shared with the other adapters and live in
+#   adapters/shared/detect.sh, so copy the directory rather than this file
+#   alone:
+#     mkdir -p .claude/hooks
+#     cp -r adapters/claude-code adapters/shared .claude/hooks/
+#     bash .claude/hooks/claude-code/pre_tool_use.sh
+#   Set TOOL_REPAIR_SHARED_DIR to adapters/shared if you keep the two apart.
+#
 # Reference: https://code.claude.com/docs/en/hooks
 
 set -euo pipefail
 
 # Read the full JSON input from stdin
 INPUT=$(cat)
+
+# The detectors live in one copy at adapters/shared/detect.sh, shared with the
+# Claude Code post hook and the DeepSeek Harness adapter. This file is resolved
+# from its own location rather than the working directory, so the hook behaves
+# the same however it is invoked; TOOL_REPAIR_SHARED_DIR overrides it for an
+# install that flattens the layout.
+SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+SHARED_DIR="${TOOL_REPAIR_SHARED_DIR:-$SCRIPT_DIR/../shared}"
+if [ ! -f "$SHARED_DIR/detect.sh" ]; then
+  # Nothing to inspect without the detectors, and a hook whose only failure
+  # mode is a spurious block must not invent one. Say so, on stderr, rather
+  # than failing silently.
+  echo '{"decision": "proceed"}'
+  printf '%s\n' "[tool-repair] detectors not found at $SHARED_DIR/detect.sh; nothing was inspected" >&2
+  exit 0
+fi
+# shellcheck source=../shared/detect.sh
+. "$SHARED_DIR/detect.sh"
 
 # A decision is the contract: every invocation prints exactly one JSON object
 # and exits 0. Unparseable stdin (a truncated payload, a non-JSON body, a bare
@@ -36,81 +62,24 @@ INPUT=$(cat)
 # nothing, so the same "nothing to inspect" case behaved two different ways.
 # Proceed matches the no-tool-name path below: there is nothing to inspect, and
 # this hook's only available failure mode is a spurious block.
-if ! printf '%s' "$INPUT" | jq -e 'type == "object"' >/dev/null 2>&1; then
+if ! tr_payload_is_object "$INPUT"; then
   echo '{"decision": "proceed"}'
   exit 0
 fi
 
-# Extract tool name and arguments
-TOOL_NAME=$(printf '%s' "$INPUT" | jq -r '.tool // empty')
-ARGS_JSON=$(printf '%s' "$INPUT" | jq -c '.input // {}')
+# Claude Code's envelope: `tool` and `input`.
+tr_detect "$INPUT" tool input
 
-# If no tool name or empty args, let it through
-if [ -z "$TOOL_NAME" ] || [ "$ARGS_JSON" = "null" ]; then
+# If no tool name, let it through
+if [ -z "$TR_TOOL_NAME" ]; then
   echo '{"decision": "proceed"}'
   exit 0
 fi
 
-# Check each argument for common patterns
-ISSUES=""
-
-# Pattern 1: null values for optional fields
-# NOTE: this must be `paths(. == null)`, not `paths(scalars) as $p | select(getpath($p) == null)`.
-# paths(scalars) does not emit a path for a null value, so the select could never
-# fire and this hook silently approved every call it was installed to catch.
-NULL_FIELDS=$(printf '%s' "$ARGS_JSON" | jq -r '
-  [paths(. == null) as $p
-  | ($p | join("."))]
-  | join(", ")
-')
-if [ -n "$NULL_FIELDS" ]; then
-  ISSUES="$ISSUES null values in: $NULL_FIELDS"
-fi
-
-# Pattern 2: stringified JSON arrays
-# A leading "[" is not enough. The value must actually parse as a JSON array,
-# which is the bar the library itself uses, and which the DeepSeek Harness
-# adapter already carries. Testing only for a leading "[" blocked legitimate
-# bracketed prose such as "[1, 2] and [3, 4]" inside a writeFile content field,
-# leaving a documentation-writing agent no way to ship its own output except by
-# corrupting it.
-STRINGIFIED=$(printf '%s' "$ARGS_JSON" | jq -r '
-  [paths(type == "string") as $p
-  | select((getpath($p) | type) == "string")
-  | select(getpath($p) | startswith("["))
-  | select((try (getpath($p) | fromjson | type) catch null) == "array")
-  | ($p | join("."))]
-  | join(", ")
-')
-if [ -n "$STRINGIFIED" ]; then
-  ISSUES="$ISSUES stringified arrays in: $STRINGIFIED"
-fi
-
-# Pattern 5: markdown auto-links in string values
-# The link text must equal the URL's own path component, which is what makes
-# this a leak from the chat distribution rather than a real link. The URL may
-# be a bare host or host-plus-path, matching the library's own regex, so
-# `[notes.md](http://notes.md)` and `[notes.md](http://host/notes.md)` both
-# match while `[click](https://example.com)` does not. The value need not be
-# only a path: a leading directory is fine, hence the unanchored prefix.
-# The `\1` backreference is the whole point: without it the pattern matched ANY
-# markdown link, and a documentation agent writing `see [click](https://...)`
-# was blocked on every call.
-AUTOLINKS=$(printf '%s' "$ARGS_JSON" | jq -r '
-  [paths(type == "string") as $p
-  | select((getpath($p) | type) == "string")
-  | select(getpath($p) | test("\\[([^\\]]+)\\]\\(https?://(?:[^/]+/)?\\1\\)"))
-  | ($p | join("."))]
-  | join(", ")
-')
-if [ -n "$AUTOLINKS" ]; then
-  ISSUES="$ISSUES markdown auto-links in: $AUTOLINKS"
-fi
-
-if [ -n "$ISSUES" ]; then
+if [ -n "$TR_ISSUES" ]; then
   # Build the response with jq, not string interpolation: a field name or path
   # containing a quote or backslash would otherwise produce malformed JSON.
-  MESSAGE="[tool-repair] Detected likely tool call issue in $TOOL_NAME:$ISSUES. Fix the format and retry. Send proper types — null should be omitted, arrays should be real arrays, not strings."
+  MESSAGE="[tool-repair] Detected likely tool call issue in $TR_TOOL_NAME:$TR_ISSUES. Fix the format and retry. Send proper types — null should be omitted, arrays should be real arrays, not strings."
 
   jq -nc --arg m "$MESSAGE" '{"decision": "block", "message": $m}'
   exit 0

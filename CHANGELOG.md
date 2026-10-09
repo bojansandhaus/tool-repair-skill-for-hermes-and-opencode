@@ -1,5 +1,59 @@
 # Changelog
 
+## 1.0.6 - 2026-10-09
+
+Two medium findings and one small one, all in the shell adapters, all pinned by
+tests that fail against v1.0.5. The suites grew from 98 to 179 (Python); the
+TypeScript parity suite is unchanged at 27, because the core engine is untouched.
+
+### Fixed
+
+- **The DeepSeek Harness adapter was a silent no-op for most tools under the
+  Codex bridge.** `adapters/deepseek-harness/README.md` directed users to
+  register the hook with either of the harness' two bridges, but the Codex
+  bridge does not forward the arguments: verified against the shipped packages,
+  `@deepseek-ai/dsh-hooks-claude-code` sends `tool_input: exec.arguments` while
+  `@deepseek-ai/dsh-hooks-codex` sends
+  `tool_input: { command: commandOf(exec.arguments) }`. Under Codex the fields
+  `files`, `limit`, `timeout` and `filePath` never reach the hook, so every
+  null-field, stringified-array and auto-link pattern for a non-command tool
+  answered `proceed`. The hook now reads `.tool_input.command` as an explicit
+  fallback and scans that string, and reports the projection on stderr, naming
+  the fields the bridge dropped, so "no defect" is distinguishable from "not
+  inspected". The README states the projection in its own section and in its
+  limitations table. A full `exec` payload that carries `command` plus other
+  fields is not the projection: `keys` is compared against exactly
+  `["command"]`.
+- **Three near-identical jq detector blobs had drifted, and a fourth framework
+  would have meant a fourth copy.** The selects in the Claude Code pre hook, the
+  Claude Code post hook and the DeepSeek Harness pre hook were private copies
+  with no shared script and no contract test that they agree; v1.0.5 fixed the
+  null detector in two of the three and missed the third, which
+  `post_tool_use.sh`'s own comments record. All three now source
+  `adapters/shared/detect.sh`, and `tests/test_adapter_parity.py` runs one
+  framework-neutral corpus through all three hooks and asserts identical
+  verdicts and identical field lists. The blocking hooks take the tool and input
+  key names as arguments, so each framework keeps its own envelope. The
+  telemetry hook reports `empty_obj` and the blocking hooks do not: without a
+  schema an empty object is a legal value.
+- **The shared stringified-array select missed a leading-whitespace array.**
+  `startswith("[")` missed ` ["a.txt"] ` in both pre hooks while the library
+  repairs it and `post_tool_use.sh` detected it; the shared select is now
+  `test("^\\s*\\[")` with the existing "must parse as a JSON array" bar.
+  Missed detection, not a false positive: it costs one retry.
+
+### Also
+
+- `post_tool_use.sh` exited 5 with a jq traceback on unparseable stdin. It now
+  exits 0 quietly, matching the pre hooks' guard from v1.0.5.
+- An install that copies one hook without `adapters/shared/` used to be
+  undetectable. The hooks report it on stderr, answer `proceed`, and never
+  block on the strength of half a detector. All three READMEs now copy the
+  directories rather than single files, and `TOOL_REPAIR_SHARED_DIR` overrides
+  where the detectors are looked up.
+- The telemetry log's field separator changed from `,` to `, ` for multi-field
+  rows, so a log row reads the same as the block message it corresponds to.
+
 ## 1.0.5 - 2026-10-09
 
 Five high-severity defects fixed, plus one medium. Each is pinned by a test that

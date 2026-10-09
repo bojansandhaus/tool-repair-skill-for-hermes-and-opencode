@@ -1,7 +1,7 @@
 ---
 name: tool-call-repair-patterns
 description: Validate-then-repair patterns for tool call resilience. Five deterministic repairs, repair notes, and the structural insight that tool confusion is a harness problem, not a model problem. Based on CommandCode's approach that made DeepSeek V4 Pro outperform Opus 4.7 on tool calling.
-version: 1.0.5
+version: 1.0.6
 author: Hermione
 ---
 

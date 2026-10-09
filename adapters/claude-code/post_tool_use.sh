@@ -20,17 +20,48 @@
 #       }
 #     }
 #
+#   The detectors are shared with the pre_tool_use hook and the DeepSeek
+#   Harness adapter, so copy the directory rather than this file alone:
+#     mkdir -p .claude/hooks
+#     cp -r adapters/claude-code adapters/shared .claude/hooks/
+#     bash .claude/hooks/claude-code/post_tool_use.sh
+#   Set TOOL_REPAIR_SHARED_DIR to adapters/shared if you keep the two apart.
+#
 # Reference: https://code.claude.com/docs/en/hooks
 
 set -euo pipefail
 
 INPUT=$(cat)
 
-TOOL_NAME=$(echo "$INPUT" | jq -r '.tool // empty')
-ARGS_JSON=$(echo "$INPUT" | jq -c '.input // {}')
-RESULT_STATUS=$(echo "$INPUT" | jq -r '.result.isError // false')
+# The detectors live in one copy at adapters/shared/detect.sh. Three copies of
+# these selects used to be maintained by hand and had already drifted twice:
+# v1.0.1 fixed the null detector in two of them and missed this one, so the
+# telemetry this hook exists to collect reported no null fields at all;
+# v1.0.5 found the stringified-array and auto-link selects had diverged the
+# same way. See adapters/shared/detect.sh for the history and the reason the
+# null select is `paths(. == null)`.
+SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+SHARED_DIR="${TOOL_REPAIR_SHARED_DIR:-$SCRIPT_DIR/../shared}"
+if [ ! -f "$SHARED_DIR/detect.sh" ]; then
+  printf '%s\n' "[tool-repair] detectors not found at $SHARED_DIR/detect.sh; nothing was inspected" >&2
+  exit 0
+fi
+# shellcheck source=../shared/detect.sh
+. "$SHARED_DIR/detect.sh"
 
-if [ -z "$TOOL_NAME" ] || [ "$ARGS_JSON" = "null" ]; then
+# An unparseable body is not a tool call, so there is nothing to log. v1.0.5
+# put this guard's twin in both pre-tool hooks, where a missing decision was a
+# broken contract; here it was a crash under `set -e` with exit 5 and stderr
+# tracebacks in the session log for empty or truncated payloads.
+if ! tr_payload_is_object "$INPUT"; then
+  exit 0
+fi
+
+tr_detect "$INPUT" tool input
+TOOL_NAME="$TR_TOOL_NAME"
+RESULT_STATUS=$(tr_jq "$INPUT" '.result.isError // false')
+
+if [ -z "$TOOL_NAME" ]; then
   exit 0
 fi
 
@@ -39,46 +70,16 @@ LOG_DIR="${CLAUDE_CODE_DIR:-$HOME/.claude}"
 mkdir -p "$LOG_DIR"
 LOG_FILE="$LOG_DIR/tool-repair-telemetry.log"
 
-# Check each pattern
-# NOTE: this must be `paths(. == null)`, not `paths(scalars) as $p | select(getpath($p) == null)`.
-# paths(scalars) emits a path only for non-null scalars, so the select could
-# never fire and this check silently reported no null fields at all. Verified on
-# jq 1.8.1: `{"limit":null,"s":"x"} | [paths(scalars)]` is [["s"]], and the
-# select returns []. The pre_tool_use.sh hook had the same defect and was fixed
-# in v1.0.1; this hook was missed.
-NULL_FIELDS=$(echo "$ARGS_JSON" | jq -r '
-  [paths(. == null) as $p
-  | ($p | join("."))]
-  | join(",")
-')
-
-STRINGIFIED=$(echo "$ARGS_JSON" | jq -r '
-  [paths(type == "string") as $p
-  | select(getpath($p) | test("^\\s*\\["))
-  | ($p | join("."))]
-  | join(",")
-')
-
-EMPTY_OBJ=$(echo "$ARGS_JSON" | jq -r '
-  [paths as $p
-  | select((getpath($p) | type) == "object" and (getpath($p) | length) == 0)
-  | ($p | join("."))]
-  | join(",")
-')
-
-AUTOLINKS=$(echo "$ARGS_JSON" | jq -r '
-  [paths(type == "string") as $p
-  | select(getpath($p) | test("\\[[^]]+\\]\\(https?://"))
-  | ($p | join("."))]
-  | join(",")
-')
-
-# If any patterns found, log them
+# TR_ROWS carries one `pattern=fields` row per detector that fired. This hook
+# reports all four patterns, including empty_object: a log line costs nothing
+# and the schema that decides whether an empty object is a defect belongs to
+# the executor. The blocking hooks deliberately leave that one out, because
+# blocking on `{"options":{}}` without a schema is a false positive.
 PATTERNS=""
-[ -n "$NULL_FIELDS" ]   && PATTERNS="$PATTERNS null=($NULL_FIELDS)"
-[ -n "$STRINGIFIED" ]   && PATTERNS="$PATTERNS stringified=($STRINGIFIED)"
-[ -n "$EMPTY_OBJ" ]     && PATTERNS="$PATTERNS empty_obj=($EMPTY_OBJ)"
-[ -n "$AUTOLINKS" ]     && PATTERNS="$PATTERNS autolink=($AUTOLINKS)"
+while IFS='=' read -r name fields; do
+  [ -n "$name" ] || continue
+  PATTERNS="$PATTERNS $name=($fields)"
+done <<< "$TR_ROWS"
 
 if [ -n "$PATTERNS" ]; then
   TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")

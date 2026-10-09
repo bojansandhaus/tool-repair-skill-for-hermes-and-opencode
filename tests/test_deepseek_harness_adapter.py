@@ -196,5 +196,92 @@ def test_answers_a_decision_on_unparseable_stdin(stdin_text):
     assert len(proc.stdout.strip().splitlines()) == 1, stdin_text
 
 
+# --------------------------------------------------------------------------
+# the Codex bridge's projection: the part that used to be silent
+# --------------------------------------------------------------------------
+
+def codex_payload(tool="exec", command="ls -la", **extra_args):
+    """A payload shaped like the one the Codex bridge emits.
+
+    It does not forward the arguments. Verified against the shipped bridges,
+    `@deepseek-ai/dsh-hooks-codex` sends
+
+        tool_input: { command: commandOf(exec.arguments) }
+
+    so `files`, `limit`, `timeout` and `filePath` are gone before the hook
+    runs and no amount of jq brings them back. Under that bridge this adapter
+    used to answer `proceed` to every non-command tool without saying why.
+    `extra_args` go into `tool_input`, so a payload can carry more than the
+    command the way a full Claude Code bridge payload does.
+    """
+    args = {"command": command}
+    args.update(extra_args)
+    return dsh_payload(tool, args)
+
+
+def test_the_command_is_honoured_under_the_codex_projection():
+    """The command string is the whole visible input, so a command-shaped
+    defect in it must still block."""
+    out = run_hook(codex_payload("exec", '["a.txt", "b.txt"]'))
+    assert out["decision"] == "block"
+    assert "command" in out["message"]
+    assert "stringified arrays" in out["message"]
+
+
+def test_a_command_shaped_autolink_is_detected_under_the_projection():
+    out = run_hook(codex_payload("exec", "cat /x/[notes.md](http://notes.md)"))
+    assert out["decision"] == "block"
+    assert "markdown auto-links" in out["message"]
+
+
+def test_a_stringified_array_with_leading_whitespace_is_detected():
+    """The library trims before it tests the brackets, so it repairs
+    ` ["a.txt"] `. Both pre hooks used `startswith("[")` and missed the
+    leading-whitespace form while post_tool_use.sh detected it; the mounts are
+    now one shared select and all three agree."""
+    out = run_hook(dsh_payload("writeFile", {"files": ' ["a.txt"] '}))
+    assert out["decision"] == "block"
+    assert "stringified arrays" in out["message"]
+    assert "files" in out["message"]
+
+
+def test_the_projection_is_reported_not_silently_ignored():
+    """A non-command field is reported unavailable rather than waved through
+    as though it had been inspected. The fields the projection erases are
+    named, so a user reading the session log can tell what this adapter is not
+    covering under the Codex bridge."""
+    proc = subprocess.run(
+        ["bash", str(HOOK)],
+        input=json.dumps(codex_payload("readFile", "cat /x")),
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert json.loads(proc.stdout)["decision"] == "proceed"
+    assert "codex bridge projection" in proc.stderr
+    assert "not inspected" in proc.stderr
+    for field in ("files", "limit", "timeout", "filePath"):
+        assert field in proc.stderr, field
+
+
+def test_a_full_payload_is_not_mistaken_for_the_projection():
+    """A real `exec` call also has `command`, and it also carries the rest of its
+    fields. Keys are sorted, so the projection is exactly one key: the full
+    payload must still be inspected field by field."""
+    out = run_hook(codex_payload("exec", "ls", timeout=None))
+    assert out["decision"] == "block"
+    assert "timeout" in out["message"]
+
+
+def test_a_null_command_under_the_projection_still_reports():
+    """The bridge's projection is not evidence that the model sent a null, but
+    it is not evidence that it did not. The null report is kept: suppressing a
+    report on that guess would be the silent-approval bug this adapter was
+    written to fix."""
+    out = run_hook(codex_payload("exec", None))
+    assert out["decision"] == "block"
+    assert "command" in out["message"]
+
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-q"]))
