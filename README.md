@@ -133,6 +133,8 @@ See each adapter's README for setup instructions.
 - **String-valued content is not at risk.** The stringified-array rule only fires on a string that parses as a JSON array, and the auto-link rule only fires when the link text equals the URL's own path component. Prose like `[1, 2] and [3, 4]` and a real link like `[click](https://example.com)` pass through untouched, which the test suite asserts.
 - **Non-JSON tool data is unaffected.** The repair layer only examines tool call arguments (the JSON dict describing what the tool should do), not tool results, binary content, images, or multimodal data.
 - **Schema-aware array repairs.** Array-specific repairs (empty-object-to-array, bare-string-wrap) only fire when the tool JSON schema confirms the field expects an array type. Without a schema, only safe universal repairs run (null-strip, stringified-array-parse, autolink-unwrap).
+- **A bracketed string that does not parse is never wrapped into an array element.** `[not json]` is either prose or a broken array serialization, and turning it into `["[not json]"]` produces a valid-looking call full of garbage. It is left for the validator to report. A malformed or boolean JSON Schema is walked past rather than raising.
+- **The caller's dict is not mutated.** `repair_function_args` deep-copies its input, so the documented write-back pattern (`if fixed != parsed`) actually fires, and a tool call that needs no repair produces no write-back.
 - **Repair notes deduplicate.** If a repair note was already appended on a previous turn, it won't get stacked again.
 
 ## Dependencies

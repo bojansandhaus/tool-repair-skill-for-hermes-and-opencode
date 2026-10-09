@@ -154,6 +154,16 @@ test('a malformed schema does not throw', () => {
     { type: 'object', properties: { files: { anyOf: [null, { type: 'array' }] } } },
     { type: 'object', properties: null },
     { type: 'object', properties: { files: 'array' } },
+    // Boolean schemas are valid JSON Schema, and so is a field typed only as
+    // a bare scalar. The Python walker raised on each of these; it now carries
+    // the same guards, so the two agree on the outcome and not just on survival.
+    { type: 'object', properties: { files: true } },
+    { type: 'object', properties: { files: false } },
+    { type: 'object', properties: { files: 3 } },
+    { type: 'object', properties: { files: { oneOf: [null] } } },
+    { type: 'object', properties: { files: { anyOf: 'array' } } },
+    { type: 'object', required: 'files', properties: { files: { type: 'array' } } },
+    { type: 'object', required: null },
   ]) {
     assert.doesNotThrow(
       () => repairFunctionArgs('t', { files: 'a.txt' }, schema as never),
@@ -162,12 +172,106 @@ test('a malformed schema does not throw', () => {
   }
 });
 
+test('a malformed or boolean schema repairs nothing', () => {
+  // The Python side is asserted value-for-value against the same list in
+  // tests/test_tool_repair.py::test_a_malformed_or_boolean_schema_does_not_raise.
+  for (const schema of [
+    { type: 'object', properties: null },
+    { type: 'object', properties: { files: null } },
+    { type: 'object', properties: { files: true } },
+    { type: 'object', properties: { files: false } },
+    { type: 'object', properties: { files: 'array' } },
+    { type: 'object', properties: { files: 3 } },
+    { type: 'object', properties: { files: { anyOf: { type: 'array' } } } },
+    { type: 'object', properties: { files: { anyOf: 'array' } } },
+  ]) {
+    const [args, notes] = repairFunctionArgs('t', { files: 'a.txt' }, schema as never);
+    assert.deepEqual(args, { files: 'a.txt' }, JSON.stringify(schema));
+    assert.equal(notes.length, 0, JSON.stringify(schema));
+  }
+});
+
+test('a union with a null entry still declares an array', () => {
+  // The guard must not swallow the declaration it sits next to.
+  const [args, notes] = repairFunctionArgs(
+    't',
+    { files: 'a.txt' },
+    { type: 'object', properties: { files: { anyOf: [null, { type: 'array' }] } } } as never,
+  );
+  assert.deepEqual(args, { files: ['a.txt'] });
+  assert.equal(notes.length, 1);
+});
+
+test('a type union that names array is recognised', () => {
+  // Python compared `type == "array"` only, so a `["string","array"]` union was
+  // invisible to it and the bare-string repair silently did not fire. Both
+  // ports now accept the union, which is what the null walker already did for
+  // a union naming "null".
+  for (const schema of [
+    { type: 'object', properties: { files: { type: ['string', 'array'] } } },
+    { type: 'object', properties: { files: { type: ['array', 'string'] } } },
+  ]) {
+    const [wrapped] = repairFunctionArgs('t', { files: 'a.txt' }, schema as never);
+    assert.deepEqual(wrapped, { files: ['a.txt'] }, JSON.stringify(schema));
+    const [emptied] = repairFunctionArgs('t', { files: {} }, schema as never);
+    assert.deepEqual(emptied, { files: [] }, JSON.stringify(schema));
+  }
+});
+
 test('arguments without a schema are left alone', () => {
   // This is what the OpenCode adapter does today. It is why the two
   // schema-aware repairs cannot fire in that adapter.
-  const [args, notes] = repairFunctionArgs('t', { files: {} });
-  assert.deepEqual(args, { files: {} });
-  assert.equal(notes.length, 0);
+  for (const args of [
+    { files: {} },
+    { files: 'foo.txt' },
+    { files: ' [not json] ' },
+    { files: { a: 1 } },
+    { files: ['a.txt'] },
+  ]) {
+    const [out, notes] = repairFunctionArgs('t', structuredClone(args));
+    assert.deepEqual(out, args, JSON.stringify(args));
+    assert.equal(notes.length, 0, JSON.stringify(args));
+  }
+});
+
+test('a schema with no properties leaves the array repairs dormant', () => {
+  // A schema that declares no array fields is the same as no schema for these
+  // two repairs, which is what SKILL.md and README.md both promise.
+  for (const schema of [{ type: 'object' }, {}, { required: ['files'] }]) {
+    const [out, notes] = repairFunctionArgs('t', { files: 'a.txt' }, schema as never);
+    assert.deepEqual(out, { files: 'a.txt' }, JSON.stringify(schema));
+    assert.equal(notes.length, 0, JSON.stringify(schema));
+  }
+});
+
+test('a bracket-shaped string is never wrapped as an array element', () => {
+  // `["[not json]"]` is a valid array holding one garbage element, which hides
+  // the real type error from the validator. The Python port wrapped these too;
+  // both now skip them, so the two still agree.
+  for (const junk of [
+    ' [not json] ',
+    '[not json]',
+    '[1, 2] and [3, 4]',
+    '[a.md] and [b.md]',
+  ]) {
+    const [out, notes] = repairFunctionArgs(
+      't',
+      { files: junk },
+      { type: 'object', properties: { files: { type: 'array' } } } as never,
+    );
+    assert.deepEqual(out, { files: junk }, junk);
+    assert.equal(notes.length, 0, junk);
+  }
+});
+
+test('an ordinary bare string is still wrapped', () => {
+  const [out, notes] = repairFunctionArgs(
+    't',
+    { files: ' foo.txt ' },
+    { type: 'object', properties: { files: { type: 'array' } } } as never,
+  );
+  assert.deepEqual(out, { files: [' foo.txt '] });
+  assert.equal(notes.length, 1);
 });
 
 test('repair is idempotent', () => {

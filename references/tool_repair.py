@@ -27,6 +27,7 @@ Usage from agent_runtime_helpers.py:
 
 from __future__ import annotations
 
+import copy
 import json
 import re
 from typing import Any, Dict, List, Optional, Tuple
@@ -61,9 +62,14 @@ def _parse_stringified_arrays(args: dict) -> Tuple[dict, bool, List[str]]:
         # space used to wrap the whole junk string as a single array element,
         # which is worse than leaving it alone. The TypeScript port already
         # trimmed, so the two disagreed here.
-        if isinstance(v, str) and v.strip().startswith("[") and v.strip().endswith("]"):
+        trimmed = v.strip() if isinstance(v, str) else ""
+        if trimmed.startswith("[") and trimmed.endswith("]"):
             try:
-                parsed = json.loads(v)
+                # Parse the trimmed value, not the raw one: the test above is on
+                # the trimmed form, so a value that only looks array-shaped after
+                # trimming must be parsed in the same form or it is junk that
+                # happened to survive a whitespace check.
+                parsed = json.loads(trimmed)
                 if isinstance(parsed, list):
                     args[k] = parsed
                     applied = True
@@ -83,11 +89,27 @@ def _unwrap_empty_object_arrays(args: dict, expected_array_fields: set) -> Tuple
     return args, applied
 
 
+def _looks_like_stringified_array(v: str) -> bool:
+    """True when a string is bracket-shaped, i.e. it *tried* to be a JSON array.
+
+    A value like `"[not json]"` is either prose that happens to be bracketed or
+    an attempted array serialization that failed to parse. Wrapping it produces
+    `["[not json]"]`, a one-element array holding the junk, which the module's
+    own notes call "worse than leaving it alone": the validator then has nothing
+    to report and the tool receives a real array full of garbage. Leaving it
+    alone keeps the type error in front of the caller, which is the only honest
+    outcome for a value this layer cannot interpret.
+    """
+    trimmed = v.strip()
+    return trimmed.startswith("[") and trimmed.endswith("]")
+
+
 def _wrap_bare_string_arrays(args: dict, expected_array_fields: set) -> Tuple[dict, bool]:
     """Wrap `"foo"` -> `["foo"]` where schema expects an array."""
     applied = False
     for k, v in args.items():
-        if k in expected_array_fields and isinstance(v, str):
+        if k in expected_array_fields and isinstance(v, str) \
+                and not _looks_like_stringified_array(v):
             args[k] = [v]
             applied = True
     return args, applied
@@ -125,19 +147,30 @@ def _null_is_removable(tool_schema: Optional[dict]) -> Tuple[set, set]:
     """
     if not tool_schema:
         return set(), set()
+    # `or {}` plus the isinstance checks below: `"properties": null` and a
+    # boolean field schema (`true`/`false`, valid JSON Schema) are legal input,
+    # and this helper must survive them exactly as `_expected_array_fields` does.
     properties = tool_schema.get("properties", {}) or {}
-    required = set(tool_schema.get("required", []) or [])
+    if not isinstance(properties, dict):
+        return set(), set()
+    # A non-list `required` is malformed. `set("files")` would otherwise become
+    # {'f','i','l','e','s'} and preserve a null on a field named "f"; the
+    # TypeScript port ignores a non-array `required` for the same reason.
+    declared_required = tool_schema.get("required")
+    required = set(declared_required) if isinstance(declared_required, (list, tuple)) else set()
     nullable: set = set()
     for name, field_schema in properties.items():
         field_schema = field_schema or {}
+        if not isinstance(field_schema, dict):
+            continue
         field_type = field_schema.get("type")
         if field_type == "null":
             nullable.add(name)
-        elif isinstance(field_type, list) and "null" in field_type:
+        elif isinstance(field_type, (list, tuple)) and "null" in field_type:
             nullable.add(name)
         for poly_key in ("anyOf", "oneOf"):
             for variant in field_schema.get(poly_key, []) or []:
-                if (variant or {}).get("type") == "null":
+                if isinstance(variant, dict) and variant.get("type") == "null":
                     nullable.add(name)
     return required, nullable
 
@@ -146,15 +179,30 @@ def _expected_array_fields(tool_schema: Optional[dict]) -> set:
     if not tool_schema:
         return set()
     array_fields = set()
-    properties = tool_schema.get("properties", {})
+    # `or {}`: a schema carrying `"properties": null` is malformed but legal
+    # input, and it is not this function's job to raise on it.
+    properties = tool_schema.get("properties", {}) or {}
+    if not isinstance(properties, dict):
+        return set()
     for field_name, field_schema in properties.items():
+        # A field schema may be absent (`null`), a boolean schema (`true` /
+        # `false`, valid JSON Schema), or any stray scalar. None of those carries
+        # a readable type, so the field is simply not known to expect an array.
+        # The same guards are why `_null_is_removable` below survives them.
+        field_schema = field_schema or {}
+        if not isinstance(field_schema, dict):
+            continue
         field_type = field_schema.get("type", "")
         if field_type == "array":
             array_fields.add(field_name)
+        # A type union that names "array" counts, exactly as the null walker
+        # treats a union naming "null", and as the TypeScript port does.
+        elif isinstance(field_type, (list, tuple)) and "array" in field_type:
+            array_fields.add(field_name)
         # Also check anyOf / oneOf for array variants
         for poly_key in ("anyOf", "oneOf"):
-            for variant in field_schema.get(poly_key, []):
-                if variant.get("type") == "array":
+            for variant in field_schema.get(poly_key, []) or []:
+                if isinstance(variant, dict) and variant.get("type") == "array":
                     array_fields.add(field_name)
     return array_fields
 
@@ -179,11 +227,17 @@ def repair_function_args(
 
     Returns:
         (repaired_args, repair_notes)
-        - repaired_args: the possibly-modified arguments dict.
+        - repaired_args: the possibly-modified arguments dict. The caller's dict
+          is NEVER mutated: the repairs run on a deep copy, so the documented
+          write-back pattern (`if fixed != parsed`) compares two distinct
+          objects and actually fires. Returning the same object made that
+          comparison always False and silently discarded every repair.
         - repair_notes: list of human-readable notes explaining what was fixed.
                         Empty list means no repairs were needed.
     """
-    original = dict(function_args)  # shallow copy for comparison
+    # Deep copy, not a shallow one: the repairs also write into nested values,
+    # and the caller keeps its own parsed dict for the write-back comparison.
+    function_args = copy.deepcopy(function_args)
     notes: List[str] = []
 
     # Each repair mutates function_args in place and returns whether it fired.
@@ -194,9 +248,6 @@ def repair_function_args(
     _result, applied = _unwrap_markdown_autolink(function_args)
     if applied:
         notes.append("[repair: unwrapped markdown autolinks in file paths]")
-
-    # Determine which fields the schema expects as arrays
-    array_fields = _expected_array_fields(tool_schema) if tool_schema else set()
 
     # Repair 1: Strip nulls that stand in for an omitted optional field
     _result, applied = _strip_null_fields(function_args, tool_schema)
@@ -210,15 +261,22 @@ def repair_function_args(
         keys_str = ", ".join(repaired_keys)
         notes.append(f"[repair: string values parsed as arrays for: {keys_str}]")
 
-    # Repair 3: Empty object -> empty array
-    _result, applied = _unwrap_empty_object_arrays(function_args, array_fields)
-    if applied:
-        notes.append("[repair: empty objects replaced with empty arrays]")
+    # Repairs 3 and 4 are schema-gated: they may only fire when the caller
+    # supplied a schema. The gate is `is not None` rather than truthiness so it
+    # reads as a decision, and it mirrors adapters/opencode/tool_repair.ts,
+    # which gates the same two on `if (toolSchema)`. SKILL.md and README.md
+    # both promise that without a schema only the three universal repairs run.
+    if tool_schema is not None:
+        # Repair 3: Empty object -> empty array
+        array_fields = _expected_array_fields(tool_schema)
+        _result, applied = _unwrap_empty_object_arrays(function_args, array_fields)
+        if applied:
+            notes.append("[repair: empty objects replaced with empty arrays]")
 
-    # Repair 4: Bare string -> single-element array
-    _result, applied = _wrap_bare_string_arrays(function_args, array_fields)
-    if applied:
-        notes.append("[repair: bare strings wrapped as single-element arrays]")
+        # Repair 4: Bare string -> single-element array
+        _result, applied = _wrap_bare_string_arrays(function_args, array_fields)
+        if applied:
+            notes.append("[repair: bare strings wrapped as single-element arrays]")
 
     return function_args, notes
 

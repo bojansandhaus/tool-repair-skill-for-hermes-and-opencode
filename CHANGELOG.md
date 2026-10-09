@@ -1,6 +1,101 @@
 # Changelog
 
-## Unreleased
+## 1.0.5 - 2026-10-09
+
+Five high-severity defects fixed, plus one medium. Each is pinned by a test that
+fails against v1.0.4; the suites grew from 48 to 98 (Python) and from 21 to 27
+(TypeScript parity).
+
+### Fixed
+
+- **The Claude Code hook blocked legitimate tool calls.** Its stringified-array
+  check was `test("^\\s*\\[")`, satisfied by any value that merely starts with a
+  bracket, so a `writeFile` content field holding `"[1, 2] and [3, 4]"` was
+  blocked. Its auto-link check was `test("\\[[^]]+\\]\\(https?://")` with no
+  `\1` backreference, so *any* markdown link was flagged and a call carrying
+  `see [click](https://example.com)` was blocked too. A documentation-writing
+  agent was blocked by both, and its only escape was to corrupt its own output.
+  Both selects now carry the corrected forms the DeepSeek Harness adapter
+  already shipped in fcdee58: `try (getpath($p) | fromjson | type) == "array"`
+  and the `\1` backreference. That commit's own message said the looser Claude
+  Code check still had the false positive and was deliberately left alone; this
+  closes it. Genuine stringified arrays and degenerate auto-links still block.
+- **The Python core raised on valid JSON Schema shapes the TypeScript port
+  survives.** `_expected_array_fields` read `field_schema.get("type", "")` with
+  no type guard and `variant.get("type")` with no dict guard, and neither helper
+  survived `"properties": null`. A boolean field schema (`true`), a field schema
+  that is a string, or an `anyOf` that is an object all raised `AttributeError`
+  or `TypeError`, taking the whole tool call down. Its own sibling
+  `_null_is_removable` guarded some of this, which made the omission an internal
+  inconsistency rather than a policy. All of these shapes are now walked with
+  the same guards the TypeScript port uses; a union with a null entry still
+  declares an array, so the guards swallow no real declaration.
+- **`_null_is_removable` had the same unguarded paths and is fixed with it.** A
+  boolean or string field schema raised there too, and a `required` given as a
+  bare string became `set("files")` = {'f','i','l','e','s'}, preserving a null
+  on a field named "f". The TypeScript port already ignored a non-array
+  `required`; Python now does too.
+- **Python and TypeScript disagreed on the two schema-gated repairs.** The two
+  schema-aware repairs are now gated on `tool_schema is not None`, mirroring the
+  TypeScript port's `if (toolSchema)`, so the gate reads as a decision instead of
+  being implied through an empty field set. More importantly, Python compared
+  `type == "array"` only, so a `{"type": ["string","array"]}` union was invisible
+  to it and the bare-string and empty-object repairs silently did not fire there
+  while the TypeScript port applied them. A type union that names `"array"` is
+  now honoured, which is what the null walker already did for a union naming
+  `"null"`. A 39-case differential run of both implementations on identical
+  inputs went from 8 disagreements to 0.
+- **The Python core mutated the caller's dict, so the documented write-back
+  pattern silently discarded every repair.** `original = dict(function_args)`
+  was computed and never read, and the repairs wrote into the caller's dict in
+  place, so in the wiring SKILL.md documents, `fixed` and `parsed` were the same
+  object and `if fixed != parsed` was always False: the repaired JSON was never
+  written back and the model was never told. `repair_function_args` now deep
+  copies its input, matching the `__main__` self-test which already deep-copied
+  for exactly this reason, and the dead `original` is gone. The caller's dict is
+  never mutated, nested values included. The TypeScript port keeps its
+  documented in-place mutation, and its only caller writes the returned object
+  back itself.
+- **A non-JSON bracketed string was wrapped as a real array element.** The test
+  was `v.strip().startswith("[")` but the parse was of the untrimmed `v`, and the
+  bare-string wrap then turned `" [not json] "` into `["[not json]"]` — a valid
+  array holding one garbage element, which the module's own notes call worse
+  than leaving it alone, and which hides the real type error from the validator.
+  The parse now runs on the trimmed value and requires success, and a
+  bracket-shaped string that failed to parse is never wrapped. Both
+  implementations did this, so both were fixed together.
+
+### Changed
+
+- The Claude Code pre-tool hook now answers a decision on unparseable input.
+  `printf 'not json' | bash adapters/claude-code/pre_tool_use.sh` exited 5 with
+  empty stdout under `set -e` (jq's parse error killed the script at the first
+  extraction), while `printf ''` answered `proceed`: the same "nothing to
+  inspect" case behaved two different ways, and one of them was no answer at
+  all. The hook now proceeds, matching the existing no-tool-name path. The same
+  guard was added to the DeepSeek Harness hook, which had the identical hole.
+- Version bookkeeping. `SKILL.md`'s frontmatter said `version: 1.3.0`, a value
+  set before this repository's 1.0.x release line existed (a09e196, 2026-06-27)
+  and never updated across v1.0.1, v1.0.2 or v1.0.3, so it described no released
+  version. It is re-synced to 1.0.5, as is `references/plugin.yaml`, which still
+  said 1.0.1. The CHANGELOG's "Unreleased" heading held exactly the content of
+  `RELEASE_NOTES_v1.0.4.md` and is now dated 1.0.4; the v1.0.4 tag and GitHub
+  release were never cut and are not cut here.
+
+### Added
+
+- `tests/test_tool_repair.py`: the malformed-schema matrix, the no-schema gate
+  cases, the type-union cases, the caller-dict and write-back tests, the
+  bracketed-junk cases, the hook's two false-positive cases with their
+  true-positive controls, and the unparseable-stdin decision contract.
+- `tests/parity.test.ts`: the malformed-schema matrix asserted value-for-value
+  (not just `doesNotThrow`), the type-union and no-schema cases, and the
+  bracket-shaped-string case. One of these fails against v1.0.4's
+  `tool_repair.ts`; the rest pin the side that was already right.
+- `tests/test_deepseek_harness_adapter.py`: the unparseable-stdin contract.
+- `README.md`: a safety-guarantee line for the new bracket-shaped-junk boundary.
+
+## 1.0.4 - 2026-10-06
 
 - **Added a DeepSeek Harness adapter** (`adapters/deepseek-harness/`): a
   `PreToolUse` command hook plus registration instructions for the bridge
